@@ -22,7 +22,7 @@ import type {
 } from '../types/wellness';
 
 export function DoctorPortalView() {
-  const { firebaseUser, profile, isAdmin, switchPortalRole } = useAuth();
+  const { user, profile, isAdmin, switchPortalRole } = useAuth();
   const {
     doctorStatuses,
     appointments,
@@ -80,13 +80,13 @@ export function DoctorPortalView() {
 
   const filteredAppointments = useMemo(() => {
     return appointments.filter((a) => {
-      if (!isAdmin && a.doctorId !== selectedDoctorId && a.assignedDoctorUid !== firebaseUser?.uid) {
+      if (!isAdmin && a.doctorId !== selectedDoctorId && a.assignedDoctorUid !== user?.uid) {
         return false;
       }
       if (apptFilter !== 'all' && a.status !== apptFilter) return false;
       return true;
     });
-  }, [appointments, apptFilter, isAdmin, selectedDoctorId, firebaseUser?.uid]);
+  }, [appointments, apptFilter, isAdmin, selectedDoctorId, user?.uid]);
 
   async function handleSaveDutyStatus(e: React.FormEvent) {
     e.preventDefault();

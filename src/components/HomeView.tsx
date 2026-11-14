@@ -26,7 +26,7 @@ interface HomeViewProps {
 }
 
 export function HomeView({ onNavigate }: HomeViewProps) {
-  const { firebaseUser, profile } = useAuth();
+  const { user, profile } = useAuth();
   const { doctorStatuses, specialistRosters } = useWellnessData();
   const [heroLoaded, setHeroLoaded] = useState(true);
 
@@ -114,11 +114,11 @@ export function HomeView({ onNavigate }: HomeViewProps) {
                 <span className="font-mono-tabular">{WELLNESS_CONTACTS.wellness}</span>
               </p>
               <p className="mt-1 font-display text-lg font-bold text-white">
-                {firebaseUser
-                  ? `Welcome back, ${profile?.displayName || firebaseUser.displayName}`
+                {user
+                  ? `Welcome back, ${profile?.displayName || user.displayName}`
                   : 'Separate Portals for Students & Doctors'}
               </p>
-              {!firebaseUser && (
+              {!user && (
                 <div className="mt-3 flex flex-wrap gap-2.5">
                   <button
                     type="button"
@@ -167,14 +167,14 @@ export function HomeView({ onNavigate }: HomeViewProps) {
         <div className="rounded-2xl glass-panel p-4 sm:p-5">
           <p className="text-xs font-medium text-[#476360] dark:text-[#9ab3b0]">Workspace mode</p>
           <p className="mt-1.5 font-display text-xl sm:text-2xl font-bold text-[#0f2422] dark:text-white truncate">
-            {firebaseUser
+            {user
               ? profile?.role === 'doctor'
                 ? 'Doctor Desk'
                 : 'Student Sync'
               : 'Guest Device'}
           </p>
           <p className="mt-1 text-xs text-[#476360] dark:text-[#9ab3b0]">
-            {firebaseUser ? 'Cloud encrypted' : 'Local browser storage'}
+            {user ? 'Supabase synced' : 'Local browser storage'}
           </p>
         </div>
       </section>

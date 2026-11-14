@@ -34,7 +34,7 @@ const VIEW_TITLES: Record<AppView, string> = {
 };
 
 export function Navbar({ currentView, darkMode, onToggleDark, onNavigate }: NavbarProps) {
-  const { firebaseUser, profile } = useAuth();
+  const { user, profile } = useAuth();
   const isDoctorMode = profile?.role === 'doctor';
 
   const sidebarItems: { id: AppView; label: string; icon: typeof Home; accent?: 'danger' }[] = [
@@ -64,7 +64,7 @@ export function Navbar({ currentView, darkMode, onToggleDark, onNavigate }: Navb
         { id: 'more', label: 'More', icon: Menu },
       ];
 
-  const primaryActionLabel = firebaseUser
+  const primaryActionLabel = user
     ? isDoctorMode
       ? `Dr. ${profile?.displayName?.split(' ')[0] || 'Portal'}`
       : profile?.displayName?.split(' ')[0] || 'Student'
@@ -88,7 +88,7 @@ export function Navbar({ currentView, darkMode, onToggleDark, onNavigate }: Navb
               IIT Dharwad Wellness
             </div>
             <div className="mt-0.5 text-xs text-[#55706c] dark:text-[#86a39f]">
-              {firebaseUser
+              {user
                 ? isDoctorMode
                   ? 'Practitioner Workspace'
                   : 'Student Health Portal'
@@ -169,16 +169,16 @@ export function Navbar({ currentView, darkMode, onToggleDark, onNavigate }: Navb
           >
             <div className="min-w-0">
               <div className="text-xs font-semibold text-[#0f2422] dark:text-white truncate">
-                {firebaseUser
-                  ? profile?.displayName || firebaseUser.displayName || 'Account'
+                {user
+                  ? profile?.displayName || user.displayName || 'Account'
                   : 'Student / Doctor Sign In'}
               </div>
               <div className="text-[11px] text-[#55706c] dark:text-[#86a39f] truncate">
-                {firebaseUser
+                {user
                   ? isDoctorMode
                     ? 'Doctor Portal active'
                     : 'Student Portal active'
-                  : 'Google Sign-In'}
+                  : 'Supabase Auth'}
               </div>
             </div>
             <LogIn className="w-4 h-4 text-[#0f766e] dark:text-[#2dd4bf] shrink-0" />

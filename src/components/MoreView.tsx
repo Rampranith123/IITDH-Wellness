@@ -23,7 +23,7 @@ interface MoreViewProps {
 }
 
 export function MoreView({ darkMode, onToggleDark }: MoreViewProps) {
-  const { firebaseUser, profile, updateStudentProfile } = useAuth();
+  const { user, profile, updateStudentProfile } = useAuth();
   const { localUhid, saveLocalUhid } = useWellnessData();
 
   const [name, setName] = useState(profile?.displayName || localUhid.name || '');
@@ -45,7 +45,7 @@ export function MoreView({ darkMode, onToggleDark }: MoreViewProps) {
 
   async function handleSaveUhid(e: React.FormEvent) {
     e.preventDefault();
-    if (firebaseUser && profile) {
+    if (user && profile) {
       await updateStudentProfile({
         displayName: name.trim() || profile.displayName,
         rollNumber: roll.trim(),
@@ -164,7 +164,7 @@ export function MoreView({ darkMode, onToggleDark }: MoreViewProps) {
                 type="submit"
                 className="min-h-[40px] px-5 py-2 rounded-xl bg-[#0f766e] text-white text-sm font-semibold hover:bg-[#0d645d] dark:bg-[#2dd4bf] dark:text-[#06201d] dark:hover:bg-[#14b8a6] transition-colors cursor-pointer"
               >
-                {firebaseUser ? 'Save to account' : 'Save on this phone'}
+                {user ? 'Save to account' : 'Save on this phone'}
               </button>
               {savedMsg && (
                 <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 dark:text-emerald-400">

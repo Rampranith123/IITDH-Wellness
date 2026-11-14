@@ -1,25 +1,6 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import {
-  collection,
-  deleteDoc,
-  doc,
-  onSnapshot,
-  orderBy,
-  query,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  where,
-} from 'firebase/firestore';
-import {
-  ALL_PRACTITIONERS,
-  toIsoDate,
-} from '../data/wellnessData';
-import {
-  OperationType,
-  db,
-  handleFirestoreError,
-} from '../firebase';
+import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { ALL_PRACTITIONERS, toIsoDate } from '../data/wellnessData';
+import { supabase } from '../lib/supabase';
 import { useAuth } from './AuthContext';
 import type {
   AppointmentRecord,
@@ -37,6 +18,123 @@ interface LocalUhid {
   roll: string;
   uhid: string;
   hostelOrDept?: string;
+}
+
+interface DoctorStatusRow {
+  doctor_id: string;
+  availability_override: AvailabilityOverride;
+  custom_note: string;
+  assigned_uid: string | null;
+  updated_by_uid: string | null;
+  updated_at?: string;
+}
+
+interface SpecialistRosterRow {
+  date_key: string;
+  specialists: string[];
+  time_window: string;
+  updated_by_uid: string | null;
+  updated_at?: string;
+}
+
+interface AppointmentRow {
+  id: string;
+  student_uid: string;
+  student_name: string;
+  student_roll: string;
+  student_uhid: string;
+  doctor_id: string;
+  doctor_name: string;
+  doctor_spec: string;
+  assigned_doctor_uid: string | null;
+  date: string;
+  time: string;
+  reason: string;
+  doctor_notes: string;
+  status: AppointmentStatus;
+  created_at?: string;
+  updated_at?: string;
+}
+
+interface MoodRow {
+  id?: string;
+  user_uid: string;
+  date: string;
+  score: number;
+  note: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+interface DoctorRequestRow {
+  uid: string;
+  email: string;
+  full_name: string;
+  requested_doctor_id: string;
+  credentials: string;
+  status: 'pending' | 'approved' | 'rejected';
+  created_at?: string;
+  updated_at?: string;
+}
+
+interface DoctorAllowlistRow {
+  email: string;
+  assigned_doctor_id: string;
+  doctor_name: string;
+  approved_by_uid: string | null;
+  created_at?: string;
+}
+
+function mapDoctorStatusRow(row: DoctorStatusRow): DoctorStatus {
+  return {
+    doctorId: row.doctor_id,
+    availabilityOverride: row.availability_override,
+    customNote: row.custom_note || '',
+    assignedUid: row.assigned_uid || '',
+    updatedByUid: row.updated_by_uid || '',
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapRosterRow(row: SpecialistRosterRow): SpecialistRosterEntry {
+  return {
+    dateKey: row.date_key,
+    specialists: Array.isArray(row.specialists) ? row.specialists : [],
+    timeWindow: row.time_window || '3 PM – 5 PM',
+    updatedByUid: row.updated_by_uid || '',
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapAppointmentRow(row: AppointmentRow): AppointmentRecord {
+  return {
+    id: row.id,
+    studentUid: row.student_uid,
+    studentName: row.student_name,
+    studentRoll: row.student_roll || '',
+    studentUhid: row.student_uhid || '',
+    doctorId: row.doctor_id,
+    doctorName: row.doctor_name,
+    doctorSpec: row.doctor_spec,
+    assignedDoctorUid: row.assigned_doctor_uid || '',
+    date: row.date,
+    time: row.time,
+    reason: row.reason || '',
+    doctorNotes: row.doctor_notes || '',
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapMoodRow(row: MoodRow): MoodEntry {
+  return {
+    date: row.date,
+    score: row.score,
+    note: row.note || '',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 interface WellnessDataContextValue {
@@ -109,10 +207,12 @@ function sanitize(s: string, maxLen: number): string {
 }
 
 export function WellnessDataProvider({ children }: { children: React.ReactNode }) {
-  const { firebaseUser, profile, isAdmin, isVerifiedDoctor } = useAuth();
+  const { user, profile, isAdmin, isVerifiedDoctor } = useAuth();
 
   const [doctorStatuses, setDoctorStatuses] = useState<Record<string, DoctorStatus>>({});
-  const [specialistRosters, setSpecialistRosters] = useState<Record<string, SpecialistRosterEntry>>({});
+  const [specialistRosters, setSpecialistRosters] = useState<Record<string, SpecialistRosterEntry>>(
+    {}
+  );
   const [remoteAppointments, setRemoteAppointments] = useState<AppointmentRecord[]>([]);
   const [localAppointments, setLocalAppointments] = useState<AppointmentRecord[]>(() =>
     readLocal<AppointmentRecord[]>(LOCAL_APPTS_KEY, [])
@@ -127,136 +227,185 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
   const [pendingDoctorRequests, setPendingDoctorRequests] = useState<DoctorAccessRequest[]>([]);
   const [allowlistEntries, setAllowlistEntries] = useState<DoctorAllowlistEntry[]>([]);
 
-  // Public real-time doctor duty statuses & Saturday visiting rosters
-  useEffect(() => {
-    const unsubStatuses = onSnapshot(
-      collection(db, 'doctor_statuses'),
-      (snap) => {
-        const next: Record<string, DoctorStatus> = {};
-        snap.forEach((d) => {
-          next[d.id] = d.data() as DoctorStatus;
-        });
-        setDoctorStatuses(next);
-      },
-      (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'doctor_statuses');
-      }
-    );
+  const fetchPublicClinicData = useCallback(async () => {
+    if (!supabase) return;
 
-    const unsubRosters = onSnapshot(
-      collection(db, 'specialist_roster'),
-      (snap) => {
-        const next: Record<string, SpecialistRosterEntry> = {};
-        snap.forEach((d) => {
-          next[d.id] = d.data() as SpecialistRosterEntry;
-        });
-        setSpecialistRosters(next);
-      },
-      (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'specialist_roster');
-      }
-    );
+    const [{ data: statusRows }, { data: rosterRows }] = await Promise.all([
+      supabase.from('doctor_statuses').select('*'),
+      supabase.from('specialist_roster').select('*'),
+    ]);
 
-    return () => {
-      unsubStatuses();
-      unsubRosters();
-    };
+    if (statusRows) {
+      const next: Record<string, DoctorStatus> = {};
+      for (const row of statusRows as DoctorStatusRow[]) {
+        next[row.doctor_id] = mapDoctorStatusRow(row);
+      }
+      setDoctorStatuses(next);
+    }
+
+    if (rosterRows) {
+      const next: Record<string, SpecialistRosterEntry> = {};
+      for (const row of rosterRows as SpecialistRosterRow[]) {
+        next[row.date_key] = mapRosterRow(row);
+      }
+      setSpecialistRosters(next);
+    }
   }, []);
 
-  // Authenticated private moods & role-scoped appointments
+  // Public real-time doctor duty statuses & Saturday visiting rosters
   useEffect(() => {
-    if (!firebaseUser || !profile) {
+    const client = supabase;
+    if (!client) return;
+
+    void fetchPublicClinicData();
+
+    const channel = client
+      .channel('public-clinic-updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'doctor_statuses' }, () => {
+        void fetchPublicClinicData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'specialist_roster' }, () => {
+        void fetchPublicClinicData();
+      })
+      .subscribe();
+
+    return () => {
+      void client.removeChannel(channel);
+    };
+  }, [fetchPublicClinicData]);
+
+  const fetchUserScopedData = useCallback(async () => {
+    if (!supabase || !user || !profile) {
       setRemoteAppointments([]);
       setRemoteMoods([]);
       return;
     }
 
-    const moodsPath = `users/${firebaseUser.uid}/moods`;
-    const unsubMoods = onSnapshot(
-      query(collection(db, 'users', firebaseUser.uid, 'moods'), orderBy('date', 'asc')),
-      (snap) => {
-        const rows: MoodEntry[] = [];
-        snap.forEach((d) => rows.push(d.data() as MoodEntry));
-        setRemoteMoods(rows);
-      },
-      (err) => {
-        handleFirestoreError(err, OperationType.LIST, moodsPath);
-      }
-    );
+    const { data: moodRows } = await supabase
+      .from('moods')
+      .select('*')
+      .eq('user_uid', user.uid)
+      .order('date', { ascending: true });
 
-    let apptsQuery;
-    if (profile.role === 'doctor' && isAdmin) {
-      apptsQuery = query(collection(db, 'appointments'));
-    } else if (profile.role === 'doctor' && isVerifiedDoctor) {
-      apptsQuery = query(
-        collection(db, 'appointments'),
-        where('assignedDoctorUid', '==', firebaseUser.uid)
-      );
-    } else {
-      apptsQuery = query(
-        collection(db, 'appointments'),
-        where('studentUid', '==', firebaseUser.uid)
-      );
+    if (moodRows) {
+      setRemoteMoods((moodRows as MoodRow[]).map(mapMoodRow));
     }
 
-    const unsubAppts = onSnapshot(
-      apptsQuery,
-      (snap) => {
-        const rows: AppointmentRecord[] = [];
-        snap.forEach((d) => {
-          rows.push({ ...(d.data() as Omit<AppointmentRecord, 'id'>), id: d.id });
-        });
-        rows.sort((a, b) => `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`));
-        setRemoteAppointments(rows);
-      },
-      (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'appointments');
+    let apptsQuery = supabase.from('appointments').select('*');
+    if (profile.role === 'doctor' && (isAdmin || isVerifiedDoctor)) {
+      if (!isAdmin) {
+        apptsQuery = apptsQuery.or(
+          `assigned_doctor_uid.eq.${user.uid},assigned_doctor_uid.is.null`
+        );
       }
-    );
+    } else {
+      apptsQuery = apptsQuery.eq('student_uid', user.uid);
+    }
+
+    const { data: apptRows } = await apptsQuery;
+    if (apptRows) {
+      const mapped = (apptRows as AppointmentRow[])
+        .map(mapAppointmentRow)
+        .sort((a, b) => `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`));
+      setRemoteAppointments(mapped);
+    }
+  }, [user, profile, isAdmin, isVerifiedDoctor]);
+
+  // Authenticated private moods & role-scoped appointments
+  useEffect(() => {
+    const client = supabase;
+    if (!client || !user || !profile) {
+      setRemoteAppointments([]);
+      setRemoteMoods([]);
+      return;
+    }
+
+    void fetchUserScopedData();
+
+    const channel = client
+      .channel(`user-wellness-${user.uid}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'moods', filter: `user_uid=eq.${user.uid}` },
+        () => {
+          void fetchUserScopedData();
+        }
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'appointments' }, () => {
+        void fetchUserScopedData();
+      })
+      .subscribe();
 
     return () => {
-      unsubMoods();
-      unsubAppts();
+      void client.removeChannel(channel);
     };
-  }, [firebaseUser, profile, isAdmin, isVerifiedDoctor]);
+  }, [user, profile, fetchUserScopedData]);
 
-  // Admin subscriptions for doctor verification
-  useEffect(() => {
-    if (!firebaseUser || !isAdmin) {
+  const fetchAdminData = useCallback(async () => {
+    if (!supabase || !user || !isAdmin) {
       setPendingDoctorRequests([]);
       setAllowlistEntries([]);
       return;
     }
 
-    const unsubReqs = onSnapshot(
-      collection(db, 'doctor_requests'),
-      (snap) => {
-        const rows: DoctorAccessRequest[] = [];
-        snap.forEach((d) => rows.push(d.data() as DoctorAccessRequest));
-        setPendingDoctorRequests(rows);
-      },
-      (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'doctor_requests');
-      }
-    );
+    const [{ data: reqRows }, { data: allowRows }] = await Promise.all([
+      supabase.from('doctor_requests').select('*'),
+      supabase.from('doctor_allowlist').select('*'),
+    ]);
 
-    const unsubAllow = onSnapshot(
-      collection(db, 'doctor_allowlist'),
-      (snap) => {
-        const rows: DoctorAllowlistEntry[] = [];
-        snap.forEach((d) => rows.push(d.data() as DoctorAllowlistEntry));
-        setAllowlistEntries(rows);
-      },
-      (err) => {
-        handleFirestoreError(err, OperationType.LIST, 'doctor_allowlist');
-      }
-    );
+    if (reqRows) {
+      setPendingDoctorRequests(
+        (reqRows as DoctorRequestRow[]).map((r) => ({
+          uid: r.uid,
+          email: r.email,
+          fullName: r.full_name,
+          requestedDoctorId: r.requested_doctor_id,
+          credentials: r.credentials,
+          status: r.status,
+          createdAt: r.created_at,
+          updatedAt: r.updated_at,
+        }))
+      );
+    }
+
+    if (allowRows) {
+      setAllowlistEntries(
+        (allowRows as DoctorAllowlistRow[]).map((a) => ({
+          email: a.email,
+          assignedDoctorId: a.assigned_doctor_id,
+          doctorName: a.doctor_name,
+          approvedByUid: a.approved_by_uid || '',
+          createdAt: a.created_at,
+        }))
+      );
+    }
+  }, [user, isAdmin]);
+
+  // Admin subscriptions for doctor verification
+  useEffect(() => {
+    const client = supabase;
+    if (!client || !user || !isAdmin) {
+      setPendingDoctorRequests([]);
+      setAllowlistEntries([]);
+      return;
+    }
+
+    void fetchAdminData();
+
+    const channel = client
+      .channel(`admin-wellness-${user.uid}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'doctor_requests' }, () => {
+        void fetchAdminData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'doctor_allowlist' }, () => {
+        void fetchAdminData();
+      })
+      .subscribe();
 
     return () => {
-      unsubReqs();
-      unsubAllow();
+      void client.removeChannel(channel);
     };
-  }, [firebaseUser, isAdmin]);
+  }, [user, isAdmin, fetchAdminData]);
 
   function saveLocalUhid(data: LocalUhid) {
     setLocalUhid(data);
@@ -279,7 +428,7 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
 
     const id = `appt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-    if (!firebaseUser || !profile) {
+    if (!supabase || !user || !profile) {
       const localRecord: AppointmentRecord = {
         id,
         studentUid: 'local',
@@ -305,50 +454,61 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
       return localRecord;
     }
 
-    const assignedDoctorUid = doctorStatuses[practitioner.id]?.assignedUid || '';
-    const payload = {
-      studentUid: firebaseUser.uid,
-      studentName: sanitize(input.studentName || profile.displayName || 'Student', 100),
-      studentRoll: sanitize(input.studentRoll ?? profile.rollNumber ?? '', 30),
-      studentUhid: sanitize(input.studentUhid ?? profile.uhid ?? '', 40),
-      doctorId: practitioner.id,
-      doctorName: sanitize(practitioner.name, 100),
-      doctorSpec: sanitize(practitioner.spec, 100),
-      assignedDoctorUid: sanitize(assignedDoctorUid, 128),
+    const assignedDoctorUid = doctorStatuses[practitioner.id]?.assignedUid || null;
+    const rowPayload = {
+      id,
+      student_uid: user.uid,
+      student_name: sanitize(input.studentName || profile.displayName || 'Student', 100),
+      student_roll: sanitize(input.studentRoll ?? profile.rollNumber ?? '', 30),
+      student_uhid: sanitize(input.studentUhid ?? profile.uhid ?? '', 40),
+      doctor_id: practitioner.id,
+      doctor_name: sanitize(practitioner.name, 100),
+      doctor_spec: sanitize(practitioner.spec, 100),
+      assigned_doctor_uid: assignedDoctorUid ? sanitize(assignedDoctorUid, 128) : null,
       date: input.date,
       time: input.time,
       reason: sanitize(input.reason, 500),
-      doctorNotes: '',
+      doctor_notes: '',
       status: 'pending' as AppointmentStatus,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
     };
 
-    try {
-      await setDoc(doc(db, 'appointments', id), payload);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, `appointments/${id}`);
+    const { data, error } = await supabase
+      .from('appointments')
+      .insert(rowPayload)
+      .select()
+      .single<AppointmentRow>();
+
+    if (error) {
+      throw new Error(error.message);
     }
 
-    return { ...payload, id };
+    const record = mapAppointmentRow(data);
+    setRemoteAppointments((prev) =>
+      [...prev, record].sort((a, b) => `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`))
+    );
+    return record;
   }
 
   async function cancelAppointment(appt: AppointmentRecord) {
-    if (appt.isLocalOnly || !firebaseUser) {
+    if (appt.isLocalOnly || !supabase || !user) {
       const updated = localAppointments.filter((a) => a.id !== appt.id);
       setLocalAppointments(updated);
       writeLocal(LOCAL_APPTS_KEY, updated);
       return;
     }
 
-    try {
-      await updateDoc(doc(db, 'appointments', appt.id), {
+    const { error } = await supabase
+      .from('appointments')
+      .update({
         status: 'cancelled',
-        updatedAt: serverTimestamp(),
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `appointments/${appt.id}`);
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', appt.id);
+
+    if (error) {
+      throw new Error(error.message);
     }
+    await fetchUserScopedData();
   }
 
   function deleteLocalAppointment(id: string) {
@@ -361,20 +521,20 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
     apptId: string,
     updates: { status: AppointmentStatus; doctorNotes: string; claimUnassigned?: boolean }
   ) {
-    if (!firebaseUser) return;
+    if (!supabase || !user) return;
     const body: Record<string, unknown> = {
       status: updates.status,
-      doctorNotes: sanitize(updates.doctorNotes, 1000),
-      updatedAt: serverTimestamp(),
+      doctor_notes: sanitize(updates.doctorNotes, 1000),
+      updated_at: new Date().toISOString(),
     };
     if (updates.claimUnassigned) {
-      body.assignedDoctorUid = firebaseUser.uid;
+      body.assigned_doctor_uid = user.uid;
     }
-    try {
-      await updateDoc(doc(db, 'appointments', apptId), body);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `appointments/${apptId}`);
+    const { error } = await supabase.from('appointments').update(body).eq('id', apptId);
+    if (error) {
+      throw new Error(error.message);
     }
+    await fetchUserScopedData();
   }
 
   async function saveMoodCheckIn(date: string, score: number, note: string) {
@@ -382,7 +542,7 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
     const cleanScore = Math.min(5, Math.max(1, Math.round(score)));
     const cleanNote = sanitize(note, 500);
 
-    if (!firebaseUser) {
+    if (!supabase || !user) {
       const next = localMoods
         .filter((m) => m.date !== cleanDate)
         .concat([{ date: cleanDate, score: cleanScore, note: cleanNote }])
@@ -393,27 +553,21 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
       return;
     }
 
-    const existing = remoteMoods.find((m) => m.date === cleanDate);
-    const ref = doc(db, 'users', firebaseUser.uid, 'moods', cleanDate);
-    try {
-      if (existing) {
-        await updateDoc(ref, {
-          score: cleanScore,
-          note: cleanNote,
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        await setDoc(ref, {
-          date: cleanDate,
-          score: cleanScore,
-          note: cleanNote,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `users/${firebaseUser.uid}/moods/${cleanDate}`);
+    const { error } = await supabase.from('moods').upsert(
+      {
+        user_uid: user.uid,
+        date: cleanDate,
+        score: cleanScore,
+        note: cleanNote,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_uid,date' }
+    );
+
+    if (error) {
+      throw new Error(error.message);
     }
+    await fetchUserScopedData();
   }
 
   async function saveDoctorStatus(
@@ -422,25 +576,26 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
     customNote: string,
     claimOwnership = true
   ) {
-    if (!firebaseUser) return;
+    if (!supabase || !user) return;
     const existing = doctorStatuses[doctorId];
-    const assignedUid = claimOwnership
-      ? firebaseUser.uid
-      : existing?.assignedUid || firebaseUser.uid;
+    const assignedUid = claimOwnership ? user.uid : existing?.assignedUid || user.uid;
 
-    const ref = doc(db, 'doctor_statuses', doctorId);
-    try {
-      await setDoc(ref, {
-        doctorId: sanitize(doctorId, 64),
-        availabilityOverride,
-        customNote: sanitize(customNote, 200),
-        assignedUid: sanitize(assignedUid, 128),
-        updatedByUid: firebaseUser.uid,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `doctor_statuses/${doctorId}`);
+    const { error } = await supabase.from('doctor_statuses').upsert(
+      {
+        doctor_id: sanitize(doctorId, 64),
+        availability_override: availabilityOverride,
+        custom_note: sanitize(customNote, 200),
+        assigned_uid: sanitize(assignedUid, 128),
+        updated_by_uid: user.uid,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'doctor_id' }
+    );
+
+    if (error) {
+      throw new Error(error.message);
     }
+    await fetchPublicClinicData();
   }
 
   async function saveSpecialistRoster(
@@ -448,85 +603,94 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
     specialists: string[],
     timeWindow: string
   ) {
-    if (!firebaseUser) return;
+    if (!supabase || !user) return;
     const cleanList = specialists
       .map((s) => sanitize(s, 120))
       .filter(Boolean)
       .slice(0, 10);
     if (!cleanList.length) return;
 
-    const ref = doc(db, 'specialist_roster', dateKey);
-    try {
-      await setDoc(ref, {
-        dateKey,
+    const { error } = await supabase.from('specialist_roster').upsert(
+      {
+        date_key: dateKey,
         specialists: cleanList,
-        timeWindow: sanitize(timeWindow || '3 PM – 5 PM', 60),
-        updatedByUid: firebaseUser.uid,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `specialist_roster/${dateKey}`);
+        time_window: sanitize(timeWindow || '3 PM – 5 PM', 60),
+        updated_by_uid: user.uid,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'date_key' }
+    );
+
+    if (error) {
+      throw new Error(error.message);
     }
+    await fetchPublicClinicData();
   }
 
   async function approveDoctorRequest(req: DoctorAccessRequest) {
-    if (!firebaseUser || !isAdmin) return;
-    try {
-      await setDoc(doc(db, 'doctor_allowlist', req.email), {
-        email: sanitize(req.email, 150),
-        assignedDoctorId: sanitize(req.requestedDoctorId, 64),
-        doctorName: sanitize(req.fullName, 100),
-        approvedByUid: firebaseUser.uid,
-        createdAt: serverTimestamp(),
-      });
-      await updateDoc(doc(db, 'doctor_requests', req.uid), {
+    if (!supabase || !user || !isAdmin) return;
+    const { error: allowErr } = await supabase.from('doctor_allowlist').upsert(
+      {
+        email: sanitize(req.email.toLowerCase(), 150),
+        assigned_doctor_id: sanitize(req.requestedDoctorId, 64),
+        doctor_name: sanitize(req.fullName, 100),
+        approved_by_uid: user.uid,
+      },
+      { onConflict: 'email' }
+    );
+    if (allowErr) throw new Error(allowErr.message);
+
+    const { error: reqErr } = await supabase
+      .from('doctor_requests')
+      .update({
         status: 'approved',
-        updatedAt: serverTimestamp(),
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `doctor_allowlist/${req.email}`);
-    }
+        updated_at: new Date().toISOString(),
+      })
+      .eq('uid', req.uid);
+    if (reqErr) throw new Error(reqErr.message);
+
+    await fetchAdminData();
   }
 
   async function rejectDoctorRequest(req: DoctorAccessRequest) {
-    if (!firebaseUser || !isAdmin) return;
-    try {
-      await updateDoc(doc(db, 'doctor_requests', req.uid), {
+    if (!supabase || !user || !isAdmin) return;
+    const { error } = await supabase
+      .from('doctor_requests')
+      .update({
         status: 'rejected',
-        updatedAt: serverTimestamp(),
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `doctor_requests/${req.uid}`);
-    }
+        updated_at: new Date().toISOString(),
+      })
+      .eq('uid', req.uid);
+    if (error) throw new Error(error.message);
+
+    await fetchAdminData();
   }
 
   async function addAllowlistDoctor(email: string, assignedDoctorId: string, doctorName: string) {
-    if (!firebaseUser || !isAdmin) return;
+    if (!supabase || !user || !isAdmin) return;
     const cleanEmail = sanitize(email.toLowerCase(), 150);
-    try {
-      await setDoc(doc(db, 'doctor_allowlist', cleanEmail), {
+    const { error } = await supabase.from('doctor_allowlist').upsert(
+      {
         email: cleanEmail,
-        assignedDoctorId: sanitize(assignedDoctorId, 64),
-        doctorName: sanitize(doctorName, 100),
-        approvedByUid: firebaseUser.uid,
-        createdAt: serverTimestamp(),
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, `doctor_allowlist/${cleanEmail}`);
-    }
+        assigned_doctor_id: sanitize(assignedDoctorId, 64),
+        doctor_name: sanitize(doctorName, 100),
+        approved_by_uid: user.uid,
+      },
+      { onConflict: 'email' }
+    );
+    if (error) throw new Error(error.message);
+    await fetchAdminData();
   }
 
   async function removeAllowlistDoctor(email: string) {
-    if (!firebaseUser || !isAdmin) return;
-    try {
-      await deleteDoc(doc(db, 'doctor_allowlist', email));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `doctor_allowlist/${email}`);
-    }
+    if (!supabase || !user || !isAdmin) return;
+    const { error } = await supabase.from('doctor_allowlist').delete().eq('email', email);
+    if (error) throw new Error(error.message);
+    await fetchAdminData();
   }
 
-  const appointments = firebaseUser ? remoteAppointments : localAppointments;
-  const moods = firebaseUser ? remoteMoods : localMoods;
+  const appointments = user ? remoteAppointments : localAppointments;
+  const moods = user ? remoteMoods : localMoods;
 
   return (
     <WellnessDataContext.Provider

@@ -4,13 +4,14 @@ import {
   CheckCircle2,
   Clock,
   GraduationCap,
+  Info,
   LogOut,
   ShieldCheck,
   Stethoscope,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { ALL_PRACTITIONERS } from '../data/wellnessData';
-import type { AppView } from '../types/wellness';
+import type { AppView, UserRole } from '../types/wellness';
 
 interface AuthViewProps {
   onNavigate: (view: AppView) => void;
@@ -18,15 +19,18 @@ interface AuthViewProps {
 
 export function AuthView({ onNavigate }: AuthViewProps) {
   const {
-    firebaseUser,
+    user,
+    isSupabaseConfigured,
     profile,
     signingInPortal,
     authError,
+    authNotice,
     isAdmin,
     isVerifiedDoctor,
     needsDoctorVerification,
     doctorRequest,
-    signInWithPortal,
+    signInWithEmailPortal,
+    signInWithGooglePortal,
     signOutUser,
     updateStudentProfile,
     switchPortalRole,
@@ -40,10 +44,22 @@ export function AuthView({ onNavigate }: AuthViewProps) {
   const [hostelOrDept, setHostelOrDept] = useState(profile?.hostelOrDept || '');
   const [profileSaved, setProfileSaved] = useState(false);
 
-  const [reqName, setReqName] = useState(firebaseUser?.displayName || '');
+  const [reqName, setReqName] = useState(user?.displayName || '');
   const [reqDoctorId, setReqDoctorId] = useState(ALL_PRACTITIONERS[0].id);
   const [reqCredentials, setReqCredentials] = useState('');
   const [reqSubmitted, setReqSubmitted] = useState(false);
+
+  // Student Portal Form State
+  const [studentAuthMode, setStudentAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [studentName, setStudentName] = useState('');
+  const [studentEmail, setStudentEmail] = useState('');
+  const [studentPassword, setStudentPassword] = useState('');
+
+  // Doctor Portal Form State
+  const [doctorAuthMode, setDoctorAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [doctorName, setDoctorName] = useState('');
+  const [doctorEmail, setDoctorEmail] = useState('');
+  const [doctorPassword, setDoctorPassword] = useState('');
 
   useEffect(() => {
     if (profile) {
@@ -52,25 +68,29 @@ export function AuthView({ onNavigate }: AuthViewProps) {
       setUhid(profile.uhid || '');
       setHostelOrDept(profile.hostelOrDept || '');
     }
-    if (firebaseUser?.displayName) {
-      setReqName((prev) => prev || firebaseUser.displayName || '');
+    if (user?.displayName) {
+      setReqName((prev) => prev || user.displayName || '');
     }
-  }, [profile, firebaseUser]);
+  }, [profile, user]);
 
-  async function handleStudentSignIn() {
+  async function handlePortalEmailSubmit(e: React.FormEvent, portal: UserRole) {
+    e.preventDefault();
     clearAuthError();
-    const res = await signInWithPortal('student');
+    const isStudent = portal === 'student';
+    const mode = isStudent ? studentAuthMode : doctorAuthMode;
+    const email = isStudent ? studentEmail : doctorEmail;
+    const password = isStudent ? studentPassword : doctorPassword;
+    const fullName = isStudent ? studentName : doctorName;
+
+    const res = await signInWithEmailPortal(portal, email, password, mode, fullName);
     if (res === 'signed-in') {
-      onNavigate('me');
+      onNavigate(portal === 'doctor' ? 'doctor-portal' : 'me');
     }
   }
 
-  async function handleDoctorSignIn() {
+  async function handleGoogleSignIn(portal: UserRole) {
     clearAuthError();
-    const res = await signInWithPortal('doctor');
-    if (res === 'signed-in') {
-      onNavigate('doctor-portal');
-    }
+    await signInWithGooglePortal(portal);
   }
 
   async function handleSaveStudentProfile(e: React.FormEvent) {
@@ -104,13 +124,31 @@ export function AuthView({ onNavigate }: AuthViewProps) {
           IIT Dharwad Wellness Centre · Account Access
         </p>
         <h1 className="mt-2 font-display text-2xl sm:text-3xl font-bold tracking-tight text-[#0f2422] dark:text-white text-balance">
-          {firebaseUser ? 'Account & Portal Access' : 'Sign in to Student or Doctor Portal'}
+          {user ? 'Account & Portal Access' : 'Sign in to Student or Doctor Portal'}
         </h1>
         <p className="mt-2 max-w-2xl text-sm sm:text-base text-[#476360] dark:text-[#9ab3b0]">
           Students and Wellness Centre practitioners sign in separately so medical appointments,
           UHID cards, and live OPD schedules stay cleanly separated and private.
         </p>
       </div>
+
+      {!isSupabaseConfigured && (
+        <div
+          role="status"
+          className="rounded-2xl glass-panel border-amber-300/70 dark:border-amber-500/30 bg-amber-50/80 dark:bg-amber-950/30 px-4 py-3.5 flex items-start gap-3 text-sm text-amber-900 dark:text-amber-200"
+        >
+          <Info className="w-5 h-5 shrink-0 mt-0.5 text-amber-700 dark:text-amber-400" />
+          <div>
+            <p className="font-semibold">Supabase secrets not configured yet</p>
+            <p className="text-xs sm:text-sm opacity-90 mt-0.5">
+              Add <span className="font-mono-tabular">VITE_SUPABASE_URL</span> and{' '}
+              <span className="font-mono-tabular">VITE_SUPABASE_ANON_KEY</span> in{' '}
+              <strong>Settings &gt; Secrets</strong> and run the SQL schema to enable cloud sign-in
+              and sync. Guest local mode remains active in the meantime.
+            </p>
+          </div>
+        </div>
+      )}
 
       {authError && (
         <div
@@ -121,8 +159,17 @@ export function AuthView({ onNavigate }: AuthViewProps) {
         </div>
       )}
 
+      {authNotice && (
+        <div
+          role="status"
+          className="rounded-2xl border border-emerald-300/70 dark:border-emerald-500/30 bg-emerald-50/85 dark:bg-emerald-950/40 backdrop-blur-md px-4 py-3 text-sm text-emerald-900 dark:text-emerald-200"
+        >
+          {authNotice}
+        </div>
+      )}
+
       {/* Signed-in Account View */}
-      {firebaseUser && (
+      {user && (
         <div className="rounded-2xl glass-panel p-6 space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#cfe0dd]/60 dark:border-white/10 pb-5">
             <div>
@@ -131,10 +178,10 @@ export function AuthView({ onNavigate }: AuthViewProps) {
                 {isAdmin ? ' · Wellness Admin' : ''}
               </p>
               <h2 className="mt-1 font-display text-xl font-bold text-[#0f2422] dark:text-white">
-                {profile?.displayName || firebaseUser.displayName || 'IIT Dharwad Member'}
+                {profile?.displayName || user.displayName || 'IIT Dharwad Member'}
               </h2>
               <p className="font-mono-tabular text-xs sm:text-sm text-[#476360] dark:text-[#9ab3b0]">
-                {firebaseUser.email}
+                {user.email}
               </p>
             </div>
 
@@ -163,7 +210,7 @@ export function AuthView({ onNavigate }: AuthViewProps) {
             </div>
           </div>
 
-          {/* Doctor Verification Request Flow (if user clicked Doctor Sign In without allowlist) */}
+          {/* Doctor Verification Request Flow */}
           {needsDoctorVerification && (
             <div className="rounded-xl border border-amber-300/70 dark:border-amber-500/30 bg-amber-50/75 dark:bg-amber-950/25 p-5 space-y-4">
               <div className="flex items-start gap-3">
@@ -173,9 +220,9 @@ export function AuthView({ onNavigate }: AuthViewProps) {
                     Doctor Portal Verification Required
                   </h3>
                   <p className="mt-1 text-sm text-[#476360] dark:text-[#9ab3b0]">
-                    Your Google account ({firebaseUser.email}) is signed in as a student by default.
-                    Submit your Wellness Centre practitioner details below so the administrator can
-                    link your account to the Doctor Portal.
+                    Your account ({user.email}) is signed in as a student by default. Submit your
+                    Wellness Centre practitioner details below so the administrator can link your
+                    account to the Doctor Portal.
                   </p>
                 </div>
               </div>
@@ -360,74 +407,161 @@ export function AuthView({ onNavigate }: AuthViewProps) {
       {/* Dual Separate Sign-In Portals */}
       <div className="grid md:grid-cols-2 gap-6 items-stretch">
         {/* Student Sign-In Portal */}
-        <section className="flex flex-col justify-between rounded-2xl glass-panel p-6 sm:p-7">
+        <section className="flex flex-col justify-between rounded-2xl glass-panel p-6 sm:p-7 space-y-6">
           <div>
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl glass-inset text-[#0f766e] dark:text-[#2dd4bf]">
-                <GraduationCap className="w-5 h-5" />
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl glass-inset text-[#0f766e] dark:text-[#2dd4bf]">
+                  <GraduationCap className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-[#476360] dark:text-[#9ab3b0]">
+                    Campus Residents &amp; Scholars
+                  </p>
+                  <h2 className="font-display text-xl font-bold text-[#0f2422] dark:text-white">
+                    Student Sign In
+                  </h2>
+                </div>
               </div>
-              <div>
-                <p className="text-xs font-medium text-[#476360] dark:text-[#9ab3b0]">
-                  Campus Residents &amp; Scholars
-                </p>
-                <h2 className="font-display text-xl font-bold text-[#0f2422] dark:text-white">
-                  Student Sign In
-                </h2>
+
+              <div className="inline-flex rounded-xl glass-inset p-1 text-xs font-medium">
+                <button
+                  type="button"
+                  onClick={() => setStudentAuthMode('signin')}
+                  className={`px-2.5 py-1 rounded-lg cursor-pointer transition-colors ${
+                    studentAuthMode === 'signin'
+                      ? 'bg-white dark:bg-[#132623] text-[#0f2422] dark:text-white shadow-xs'
+                      : 'text-[#476360] dark:text-[#9ab3b0]'
+                  }`}
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStudentAuthMode('signup')}
+                  className={`px-2.5 py-1 rounded-lg cursor-pointer transition-colors ${
+                    studentAuthMode === 'signup'
+                      ? 'bg-white dark:bg-[#132623] text-[#0f2422] dark:text-white shadow-xs'
+                      : 'text-[#476360] dark:text-[#9ab3b0]'
+                  }`}
+                >
+                  Register
+                </button>
               </div>
             </div>
 
             <p className="mt-4 text-sm leading-relaxed text-[#476360] dark:text-[#9ab3b0]">
-              Sign in with your Google account to book appointments with Wellness Centre doctors and
-              counsellors, store your UHID card, and maintain your private mood check-in log across
-              devices.
+              Book appointments with Wellness Centre doctors and counsellors, store your UHID card,
+              and maintain your private mood check-in log across devices.
             </p>
 
-            <ul className="mt-5 space-y-2.5 text-sm text-[#263f3c] dark:text-[#c7dcd9]">
+            <ul className="mt-4 space-y-2 text-xs sm:text-sm text-[#263f3c] dark:text-[#c7dcd9]">
               <li className="flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-[#0f766e] dark:text-[#2dd4bf] shrink-0" />
                 <span>Send appointment requests directly to your chosen doctor</span>
               </li>
               <li className="flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-[#0f766e] dark:text-[#2dd4bf] shrink-0" />
-                <span>View doctor confirmation &amp; follow-up notes in My Health</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-[#0f766e] dark:text-[#2dd4bf] shrink-0" />
-                <span>Private mood journal visible strictly to you alone</span>
+                <span>Private mood journal synced via Supabase Row-Level Security</span>
               </li>
             </ul>
           </div>
 
-          <div className="mt-7 pt-5 border-t border-[#cfe0dd]/60 dark:border-white/10">
+          <form
+            onSubmit={(e) => handlePortalEmailSubmit(e, 'student')}
+            className="space-y-3 pt-4 border-t border-[#cfe0dd]/60 dark:border-white/10"
+          >
+            {studentAuthMode === 'signup' && (
+              <input
+                type="text"
+                required
+                maxLength={100}
+                value={studentName}
+                onChange={(e) => setStudentName(e.target.value)}
+                placeholder="Full name"
+                className="w-full min-h-[42px] rounded-xl glass-input px-3 py-2 text-sm focus:outline-2 focus:outline-[#0f766e]"
+              />
+            )}
+            <input
+              type="email"
+              required
+              value={studentEmail}
+              onChange={(e) => setStudentEmail(e.target.value)}
+              placeholder="Student email (e.g., roll@iitdh.ac.in)"
+              className="w-full min-h-[42px] rounded-xl glass-input px-3 py-2 text-sm focus:outline-2 focus:outline-[#0f766e]"
+            />
+            <input
+              type="password"
+              required
+              minLength={6}
+              value={studentPassword}
+              onChange={(e) => setStudentPassword(e.target.value)}
+              placeholder="Password (min 6 characters)"
+              className="w-full min-h-[42px] rounded-xl glass-input px-3 py-2 text-sm focus:outline-2 focus:outline-[#0f766e]"
+            />
             <button
-              type="button"
+              type="submit"
               disabled={signingInPortal !== null}
-              onClick={handleStudentSignIn}
-              className="w-full min-h-[46px] px-5 py-2.5 rounded-xl bg-[#0f766e] text-white font-semibold text-sm hover:bg-[#0d645d] disabled:opacity-60 transition-colors cursor-pointer"
+              className="w-full min-h-[44px] px-5 py-2.5 rounded-xl bg-[#0f766e] text-white font-semibold text-sm hover:bg-[#0d645d] dark:bg-[#2dd4bf] dark:text-[#06201d] dark:hover:bg-[#14b8a6] disabled:opacity-60 transition-colors cursor-pointer"
             >
               {signingInPortal === 'student'
                 ? 'Signing in as Student...'
-                : firebaseUser && profile?.role === 'student'
-                  ? 'Signed in as Student · Switch Account'
-                  : 'Continue as Student with Google'}
+                : studentAuthMode === 'signup'
+                  ? 'Create Student Account'
+                  : 'Sign In as Student'}
             </button>
-          </div>
+            <button
+              type="button"
+              disabled={signingInPortal !== null}
+              onClick={() => handleGoogleSignIn('student')}
+              className="w-full min-h-[42px] px-4 py-2 rounded-xl glass-input text-xs sm:text-sm font-semibold text-[#0f2422] dark:text-white hover:border-[#0f766e] dark:hover:border-[#2dd4bf] disabled:opacity-60 transition-colors cursor-pointer"
+            >
+              Continue as Student with Google
+            </button>
+          </form>
         </section>
 
         {/* Doctor & Counsellor Sign-In Portal */}
-        <section className="flex flex-col justify-between rounded-2xl glass-panel p-6 sm:p-7">
+        <section className="flex flex-col justify-between rounded-2xl glass-panel p-6 sm:p-7 space-y-6">
           <div>
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl glass-inset text-[#0f2422] dark:text-[#2dd4bf]">
-                <Stethoscope className="w-5 h-5" />
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl glass-inset text-[#0f2422] dark:text-[#2dd4bf]">
+                  <Stethoscope className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-[#476360] dark:text-[#9ab3b0]">
+                    Physicians, Specialists &amp; Counsellors
+                  </p>
+                  <h2 className="font-display text-xl font-bold text-[#0f2422] dark:text-white">
+                    Doctor Sign In
+                  </h2>
+                </div>
               </div>
-              <div>
-                <p className="text-xs font-medium text-[#476360] dark:text-[#9ab3b0]">
-                  Physicians, Specialists &amp; Counsellors
-                </p>
-                <h2 className="font-display text-xl font-bold text-[#0f2422] dark:text-white">
-                  Doctor Sign In
-                </h2>
+
+              <div className="inline-flex rounded-xl glass-inset p-1 text-xs font-medium">
+                <button
+                  type="button"
+                  onClick={() => setDoctorAuthMode('signin')}
+                  className={`px-2.5 py-1 rounded-lg cursor-pointer transition-colors ${
+                    doctorAuthMode === 'signin'
+                      ? 'bg-white dark:bg-[#132623] text-[#0f2422] dark:text-white shadow-xs'
+                      : 'text-[#476360] dark:text-[#9ab3b0]'
+                  }`}
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDoctorAuthMode('signup')}
+                  className={`px-2.5 py-1 rounded-lg cursor-pointer transition-colors ${
+                    doctorAuthMode === 'signup'
+                      ? 'bg-white dark:bg-[#132623] text-[#0f2422] dark:text-white shadow-xs'
+                      : 'text-[#476360] dark:text-[#9ab3b0]'
+                  }`}
+                >
+                  Register
+                </button>
               </div>
             </div>
 
@@ -437,36 +571,70 @@ export function AuthView({ onNavigate }: AuthViewProps) {
               notes.
             </p>
 
-            <ul className="mt-5 space-y-2.5 text-sm text-[#263f3c] dark:text-[#c7dcd9]">
+            <ul className="mt-4 space-y-2 text-xs sm:text-sm text-[#263f3c] dark:text-[#c7dcd9]">
               <li className="flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-[#0f766e] dark:text-[#2dd4bf] shrink-0" />
                 <span>Toggle live duty status (Available, In Consultation, On Leave)</span>
               </li>
               <li className="flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-[#0f766e] dark:text-[#2dd4bf] shrink-0" />
-                <span>Confirm student bookings &amp; record clinical follow-up guidance</span>
-              </li>
-              <li className="flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-[#0f766e] dark:text-[#2dd4bf] shrink-0" />
-                <span>Publish Saturday SDM visiting specialist rosters</span>
+                <span>Confirm student bookings &amp; publish Saturday specialist rosters</span>
               </li>
             </ul>
           </div>
 
-          <div className="mt-7 pt-5 border-t border-[#cfe0dd]/60 dark:border-white/10">
+          <form
+            onSubmit={(e) => handlePortalEmailSubmit(e, 'doctor')}
+            className="space-y-3 pt-4 border-t border-[#cfe0dd]/60 dark:border-white/10"
+          >
+            {doctorAuthMode === 'signup' && (
+              <input
+                type="text"
+                required
+                maxLength={100}
+                value={doctorName}
+                onChange={(e) => setDoctorName(e.target.value)}
+                placeholder="Practitioner full name"
+                className="w-full min-h-[42px] rounded-xl glass-input px-3 py-2 text-sm focus:outline-2 focus:outline-[#0f766e]"
+              />
+            )}
+            <input
+              type="email"
+              required
+              value={doctorEmail}
+              onChange={(e) => setDoctorEmail(e.target.value)}
+              placeholder="Practitioner email"
+              className="w-full min-h-[42px] rounded-xl glass-input px-3 py-2 text-sm focus:outline-2 focus:outline-[#0f766e]"
+            />
+            <input
+              type="password"
+              required
+              minLength={6}
+              value={doctorPassword}
+              onChange={(e) => setDoctorPassword(e.target.value)}
+              placeholder="Password (min 6 characters)"
+              className="w-full min-h-[42px] rounded-xl glass-input px-3 py-2 text-sm focus:outline-2 focus:outline-[#0f766e]"
+            />
             <button
-              type="button"
+              type="submit"
               disabled={signingInPortal !== null}
-              onClick={handleDoctorSignIn}
-              className="w-full min-h-[46px] px-5 py-2.5 rounded-xl bg-[#0f2422] dark:bg-[#2dd4bf] text-white dark:text-[#06201d] font-semibold text-sm hover:bg-[#1a3835] dark:hover:bg-[#14b8a6] disabled:opacity-60 transition-colors cursor-pointer"
+              className="w-full min-h-[44px] px-5 py-2.5 rounded-xl bg-[#0f2422] dark:bg-[#2dd4bf] text-white dark:text-[#06201d] font-semibold text-sm hover:bg-[#1a3835] dark:hover:bg-[#14b8a6] disabled:opacity-60 transition-colors cursor-pointer"
             >
               {signingInPortal === 'doctor'
                 ? 'Signing in as Doctor...'
-                : firebaseUser && profile?.role === 'doctor'
-                  ? 'Signed in as Doctor · Switch Account'
-                  : 'Continue as Doctor with Google'}
+                : doctorAuthMode === 'signup'
+                  ? 'Create Doctor Account'
+                  : 'Sign In as Doctor'}
             </button>
-          </div>
+            <button
+              type="button"
+              disabled={signingInPortal !== null}
+              onClick={() => handleGoogleSignIn('doctor')}
+              className="w-full min-h-[42px] px-4 py-2 rounded-xl glass-input text-xs sm:text-sm font-semibold text-[#0f2422] dark:text-white hover:border-[#0f766e] dark:hover:border-[#2dd4bf] disabled:opacity-60 transition-colors cursor-pointer"
+            >
+              Continue as Doctor with Google
+            </button>
+          </form>
         </section>
       </div>
     </div>

@@ -63,7 +63,7 @@ function getStatusIndicator(appt: AppointmentRecord, isPastTime: boolean) {
 }
 
 export function MyHealthView({ onNavigate }: MyHealthViewProps) {
-  const { firebaseUser } = useAuth();
+  const { user } = useAuth();
   const { appointments, moods, cancelAppointment, saveMoodCheckIn } = useWellnessData();
 
   const now = new Date();
@@ -183,12 +183,12 @@ export function MyHealthView({ onNavigate }: MyHealthViewProps) {
             My Health
           </h1>
           <p className="mt-1 text-sm text-[#476360] dark:text-[#9ab3b0]">
-            {firebaseUser
+            {user
               ? 'Synced to your private student account.'
               : 'Stored privately on this device. Sign in as a Student to sync across devices.'}
           </p>
         </div>
-        {!firebaseUser && (
+        {!user && (
           <button
             type="button"
             onClick={() => onNavigate('auth')}

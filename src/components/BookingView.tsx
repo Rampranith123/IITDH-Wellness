@@ -18,7 +18,7 @@ interface BookingViewProps {
 }
 
 export function BookingView({ practitionerId, onNavigate }: BookingViewProps) {
-  const { firebaseUser, profile } = useAuth();
+  const { user, profile } = useAuth();
   const { bookAppointment, localUhid } = useWellnessData();
 
   const practitioner = ALL_PRACTITIONERS.find((p) => p.id === practitionerId);
@@ -125,7 +125,7 @@ export function BookingView({ practitionerId, onNavigate }: BookingViewProps) {
         </div>
       )}
 
-      {!firebaseUser && (
+      {!user && (
         <div className="rounded-2xl glass-panel p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-start gap-2.5 text-xs sm:text-sm text-[#476360] dark:text-[#9ab3b0]">
             <Info className="w-4 h-4 text-[#0f766e] dark:text-[#2dd4bf] shrink-0 mt-0.5" />
@@ -247,7 +247,7 @@ export function BookingView({ practitionerId, onNavigate }: BookingViewProps) {
 
           <div>
             <label className="block text-xs font-medium text-[#476360] dark:text-[#9ab3b0] mb-1">
-              {firebaseUser
+              {user
                 ? 'Reason / Symptoms for Doctor (optional)'
                 : 'Note (stays on this device)'}
             </label>
@@ -268,7 +268,7 @@ export function BookingView({ practitionerId, onNavigate }: BookingViewProps) {
           >
             {submitting
               ? 'Saving...'
-              : firebaseUser
+              : user
                 ? 'Submit Appointment Request'
                 : 'Save to My Appointments'}
           </button>
