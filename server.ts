@@ -146,18 +146,16 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
-  app.post('/api/health-tip', async (req, res) => {
+  const handleHealthTipRequest = async (
+    params: { dateKey?: unknown; previousTip?: unknown; focus?: unknown },
+    res: express.Response
+  ) => {
+    res.setHeader('Cache-Control', 'no-store');
     try {
-      const body = (req.body ?? {}) as {
-        dateKey?: string;
-        previousTip?: string;
-        focus?: string;
-      };
-
       const payload = await generateDailyHealthTip({
-        dateKey: typeof body.dateKey === 'string' ? body.dateKey : undefined,
-        previousTip: typeof body.previousTip === 'string' ? body.previousTip : undefined,
-        focus: typeof body.focus === 'string' ? body.focus : undefined,
+        dateKey: typeof params.dateKey === 'string' ? params.dateKey : undefined,
+        previousTip: typeof params.previousTip === 'string' ? params.previousTip : undefined,
+        focus: typeof params.focus === 'string' ? params.focus : undefined,
       });
 
       res.json({
@@ -169,6 +167,30 @@ async function startServer() {
       const { status, message } = getStatusFromError(error);
       res.status(status).json({ error: message });
     }
+  };
+
+  app.post('/api/health-tip', async (req, res) => {
+    const body = (req.body ?? {}) as {
+      dateKey?: unknown;
+      previousTip?: unknown;
+      focus?: unknown;
+    };
+    await handleHealthTipRequest(body, res);
+  });
+
+  app.get('/api/health-tip', async (req, res) => {
+    await handleHealthTipRequest(
+      {
+        dateKey: req.query.dateKey,
+        previousTip: req.query.previousTip,
+        focus: req.query.focus,
+      },
+      res
+    );
+  });
+
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'API endpoint not found.' });
   });
 
   if (!isProduction) {

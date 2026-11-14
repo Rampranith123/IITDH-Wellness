@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, HeartPulse, RefreshCw, Sparkles } from 'lucide-react';
 
 interface DailyHealthTip {
@@ -7,9 +7,10 @@ interface DailyHealthTip {
   actionStep: string;
   attribution: string;
   dateKey: string;
+  focusId: FocusId;
 }
 
-const STORAGE_KEY = 'iitdh_daily_health_tip_v1';
+const STORAGE_PREFIX = 'iitdh_daily_health_tip_v2';
 
 const FOCUS_OPTIONS = [
   { id: 'balanced', label: 'All Topics', promptHint: '' },
@@ -28,9 +29,13 @@ function getLocalDateKey(date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
-function readCachedTip(dateKey: string): DailyHealthTip | null {
+function getCacheKey(dateKey: string, focusId: FocusId): string {
+  return `${STORAGE_PREFIX}:${dateKey}:${focusId}`;
+}
+
+function readCachedTip(dateKey: string, focusId: FocusId): DailyHealthTip | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(getCacheKey(dateKey, focusId));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<DailyHealthTip>;
     if (
@@ -45,6 +50,7 @@ function readCachedTip(dateKey: string): DailyHealthTip | null {
         actionStep: parsed.actionStep,
         attribution: parsed.attribution || 'Campus Wellness Guidance',
         dateKey: parsed.dateKey,
+        focusId,
       };
     }
     return null;
@@ -55,42 +61,85 @@ function readCachedTip(dateKey: string): DailyHealthTip | null {
 
 function saveCachedTip(tip: DailyHealthTip): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(tip));
+    localStorage.setItem(getCacheKey(tip.dateKey, tip.focusId), JSON.stringify(tip));
   } catch {
     // Ignore storage quota errors
+  }
+}
+
+async function parseHealthTipResponse(response: Response): Promise<Partial<DailyHealthTip> & { error?: string }> {
+  const rawText = await response.text();
+  if (!rawText) {
+    return {};
+  }
+  try {
+    return JSON.parse(rawText) as Partial<DailyHealthTip> & { error?: string };
+  } catch {
+    const snippet = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    const isNotFound = response.status === 404 || snippet.toLowerCase().includes('page could not be found');
+    throw new Error(
+      isNotFound
+        ? 'Daily Health Tip API is currently unreachable. Please refresh the page or try again shortly.'
+        : `Health tip service returned an unexpected response (HTTP ${response.status}).`
+    );
   }
 }
 
 export function DailyHealthTipCard() {
   const todayKey = getLocalDateKey();
   const [selectedFocus, setSelectedFocus] = useState<FocusId>('balanced');
-  const [tipData, setTipData] = useState<DailyHealthTip | null>(() => readCachedTip(todayKey));
-  const [loading, setLoading] = useState<boolean>(() => readCachedTip(todayKey) === null);
+  const [tipData, setTipData] = useState<DailyHealthTip | null>(() =>
+    readCachedTip(todayKey, 'balanced')
+  );
+  const [loading, setLoading] = useState<boolean>(
+    () => readCachedTip(todayKey, 'balanced') === null
+  );
   const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const fetchTip = useCallback(
-    async (options?: { focusId?: FocusId; previousTip?: string }) => {
-      const activeFocus = options?.focusId ?? selectedFocus;
-      const focusEntry = FOCUS_OPTIONS.find((item) => item.id === activeFocus);
+    async (options: { focusId: FocusId; previousTip?: string }) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const focusEntry = FOCUS_OPTIONS.find((item) => item.id === options.focusId);
 
       setLoading(true);
       setError(null);
 
       try {
-        const response = await fetch('/api/health-tip', {
+        let response = await fetch('/api/health-tip', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
           body: JSON.stringify({
             dateKey: todayKey,
             focus: focusEntry?.promptHint || undefined,
-            previousTip: options?.previousTip,
+            previousTip: options.previousTip,
           }),
         });
 
-        const payload = (await response.json()) as Partial<DailyHealthTip> & { error?: string };
+        // Brief single retry on transient proxy 502/503/504 responses
+        if ([502, 503, 504].includes(response.status)) {
+          await new Promise((resolve) => setTimeout(resolve, 750));
+          if (controller.signal.aborted) return;
+          response = await fetch('/api/health-tip', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              dateKey: todayKey,
+              focus: focusEntry?.promptHint || undefined,
+              previousTip: options.previousTip,
+            }),
+          });
+        }
+
+        const payload = await parseHealthTipResponse(response);
 
         if (!response.ok) {
-          throw new Error(payload.error || 'Could not load today’s health tip.');
+          throw new Error(payload.error || `Could not load today’s health tip (HTTP ${response.status}).`);
         }
 
         if (!payload.tip || !payload.category || !payload.actionStep) {
@@ -103,31 +152,51 @@ export function DailyHealthTipCard() {
           actionStep: payload.actionStep,
           attribution: payload.attribution || 'Campus Wellness Guidance',
           dateKey: todayKey,
+          focusId: options.focusId,
         };
 
-        setTipData(nextTip);
-        saveCachedTip(nextTip);
+        if (!controller.signal.aborted) {
+          setTipData(nextTip);
+          saveCachedTip(nextTip);
+        }
       } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          return;
+        }
         setError(err instanceof Error ? err.message : 'Unable to fetch daily health tip.');
       } finally {
-        setLoading(false);
+        if (abortRef.current === controller) {
+          setLoading(false);
+        }
       }
     },
-    [selectedFocus, todayKey]
+    [todayKey]
   );
 
+  // Initial load for the current day only (no race with focus changes)
   useEffect(() => {
-    const cached = readCachedTip(todayKey);
+    const cached = readCachedTip(todayKey, 'balanced');
     if (cached) {
       setTipData(cached);
       setLoading(false);
-      return;
+    } else {
+      void fetchTip({ focusId: 'balanced' });
     }
-    void fetchTip({ focusId: 'balanced' });
+    return () => {
+      abortRef.current?.abort();
+    };
   }, [todayKey, fetchTip]);
 
   const handleFocusChange = (focusId: FocusId) => {
     setSelectedFocus(focusId);
+    const cachedForTopic = readCachedTip(todayKey, focusId);
+    if (cachedForTopic) {
+      abortRef.current?.abort();
+      setTipData(cachedForTopic);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     void fetchTip({ focusId, previousTip: tipData?.tip });
   };
 
@@ -170,9 +239,8 @@ export function DailyHealthTipCard() {
                   <button
                     key={option.id}
                     type="button"
-                    disabled={loading}
                     onClick={() => handleFocusChange(option.id)}
-                    className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer disabled:opacity-60 ${
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
                       active
                         ? 'bg-[#0f766e] text-white dark:bg-[#2dd4bf] dark:text-[#06201d] shadow-xs'
                         : 'text-[#476360] dark:text-[#9ab3b0] hover:text-[#0f2422] dark:hover:text-white'
@@ -225,9 +293,16 @@ export function DailyHealthTipCard() {
                   — {tipData.attribution}
                 </p>
                 {error && (
-                  <p className="text-xs text-amber-700 dark:text-amber-300 pt-1">
-                    {error} Showing last saved tip.
-                  </p>
+                  <div className="pt-1 flex flex-wrap items-center gap-3">
+                    <p className="text-xs text-amber-700 dark:text-amber-300">{error}</p>
+                    <button
+                      type="button"
+                      onClick={() => void fetchTip({ focusId: selectedFocus, previousTip: tipData.tip })}
+                      className="text-xs font-semibold text-[#0f766e] dark:text-[#2dd4bf] hover:underline cursor-pointer"
+                    >
+                      Retry
+                    </button>
+                  </div>
                 )}
               </div>
 
