@@ -1,0 +1,6 @@
+{
+  "name": "IIT Dharwad Wellness",
+  "description": "Campus Wellness Centre portal for IIT Dharwad with live doctor availability, counselling, emergency SOS, UHID card, mood tracking, and separate Student and Doctor sign-in portals.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

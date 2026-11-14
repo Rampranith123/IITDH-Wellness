@@ -1,0 +1,411 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user profile for either a student or a doctor at IIT Dharwad Wellness Centre.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth user ID."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Full name of the student or doctor."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 150,
+          "description": "Verified Google account email."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["student", "doctor"],
+          "description": "Active portal role."
+        },
+        "rollNumber": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Student roll number (for students)."
+        },
+        "uhid": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Wellness Centre UHID card number."
+        },
+        "hostelOrDept": {
+          "type": "string",
+          "maxLength": 80,
+          "description": "Student hostel/department or doctor clinic room."
+        },
+        "linkedDoctorId": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Associated Wellness Centre roster ID for doctors."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Profile creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": ["uid", "displayName", "email", "role", "createdAt", "updatedAt"]
+    },
+    "MoodEntry": {
+      "title": "MoodEntry",
+      "description": "Private daily mood check-in recorded by a student.",
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "ISO date string YYYY-MM-DD."
+        },
+        "score": {
+          "type": "integer",
+          "description": "Mood rating from 1 (Awful) to 5 (Great)."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Optional private reflection note."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Update timestamp."
+        }
+      },
+      "required": ["date", "score", "note", "createdAt", "updatedAt"]
+    },
+    "Appointment": {
+      "title": "Appointment",
+      "description": "Medical or counselling appointment booked by a student with a Wellness Centre practitioner.",
+      "type": "object",
+      "properties": {
+        "studentUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the student who booked the appointment."
+        },
+        "studentName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Student display name."
+        },
+        "studentRoll": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Student roll number."
+        },
+        "studentUhid": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Student UHID number."
+        },
+        "doctorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Identifier of the doctor or counsellor."
+        },
+        "doctorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Name of the doctor or counsellor."
+        },
+        "doctorSpec": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Specialty of the practitioner."
+        },
+        "assignedDoctorUid": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Firebase Auth UID of the practitioner assigned to this doctor roster ID if claimed."
+        },
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Appointment date YYYY-MM-DD."
+        },
+        "time": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^\\d{2}:\\d{2}$",
+          "description": "Appointment time HH:MM (24h)."
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Student symptom or visit reason."
+        },
+        "doctorNotes": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Clinical follow-up or guidance notes written by the doctor."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "confirmed", "completed", "cancelled"],
+          "description": "Appointment lifecycle state."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": [
+        "studentUid",
+        "studentName",
+        "doctorId",
+        "doctorName",
+        "doctorSpec",
+        "assignedDoctorUid",
+        "date",
+        "time",
+        "reason",
+        "doctorNotes",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DoctorStatus": {
+      "title": "DoctorStatus",
+      "description": "Live duty availability override and clinic notice for a Wellness Centre doctor or counsellor.",
+      "type": "object",
+      "properties": {
+        "doctorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Doctor or counsellor roster ID."
+        },
+        "availabilityOverride": {
+          "type": "string",
+          "enum": ["auto", "available", "in_consultation", "on_leave"],
+          "description": "Live duty override state."
+        },
+        "customNote": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Short clinic notice shown to students."
+        },
+        "assignedUid": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Firebase Auth UID of the verified doctor managing this profile."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "UID of the doctor or admin who last updated status."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Update timestamp."
+        }
+      },
+      "required": ["doctorId", "availabilityOverride", "customNote", "assignedUid", "updatedByUid", "updatedAt"]
+    },
+    "DoctorAllowlistEntry": {
+      "title": "DoctorAllowlistEntry",
+      "description": "Approved email entry granting access to the Doctor Portal.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 150,
+          "description": "Verified email address of the doctor."
+        },
+        "assignedDoctorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Roster doctor ID assigned to this account."
+        },
+        "doctorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Display name of the doctor."
+        },
+        "approvedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Admin UID who granted access."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Approval timestamp."
+        }
+      },
+      "required": ["email", "assignedDoctorId", "doctorName", "approvedByUid", "createdAt"]
+    },
+    "DoctorAccessRequest": {
+      "title": "DoctorAccessRequest",
+      "description": "Pending verification request submitted by a practitioner signing into the Doctor Portal.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Applicant Firebase Auth UID."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 150,
+          "description": "Applicant Google email."
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Applicant full name."
+        },
+        "requestedDoctorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Roster ID requested."
+        },
+        "credentials": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "description": "Medical registration number or Wellness Centre ID."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"],
+          "description": "Verification status."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Submission timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last review timestamp."
+        }
+      },
+      "required": ["uid", "email", "fullName", "requestedDoctorId", "credentials", "status", "createdAt", "updatedAt"]
+    },
+    "SpecialistRosterEntry": {
+      "title": "SpecialistRosterEntry",
+      "description": "Saturday SDM visiting specialists schedule entry.",
+      "type": "object",
+      "properties": {
+        "dateKey": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Saturday date YYYY-MM-DD."
+        },
+        "specialists": {
+          "type": "array",
+          "description": "Bounded list of visiting specialist strings (max 10)."
+        },
+        "timeWindow": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "Visiting hours string."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "UID of doctor or admin who updated this date."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Update timestamp."
+        }
+      },
+      "required": ["dateKey", "specialists", "timeWindow", "updatedByUid", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user account profile isolated to owner and admin."
+    },
+    "/users/{userId}/moods/{dateId}": {
+      "schema": { "$ref": "#/entities/MoodEntry" },
+      "description": "Private daily mood check-ins strictly isolated to the owning student."
+    },
+    "/appointments/{appointmentId}": {
+      "schema": { "$ref": "#/entities/Appointment" },
+      "description": "Student appointments accessible only to the owning student, assigned doctor, or admin."
+    },
+    "/doctor_statuses/{doctorId}": {
+      "schema": { "$ref": "#/entities/DoctorStatus" },
+      "description": "Publicly readable live duty status overrides writable only by the assigned doctor or admin."
+    },
+    "/doctor_allowlist/{email}": {
+      "schema": { "$ref": "#/entities/DoctorAllowlistEntry" },
+      "description": "Admin-managed allowlist of verified Wellness Centre doctor emails."
+    },
+    "/doctor_requests/{userId}": {
+      "schema": { "$ref": "#/entities/DoctorAccessRequest" },
+      "description": "Verification requests from practitioners requesting Doctor Portal access."
+    },
+    "/specialist_roster/{dateKey}": {
+      "schema": { "$ref": "#/entities/SpecialistRosterEntry" },
+      "description": "Publicly readable Saturday SDM visiting specialist schedules."
+    }
+  }
+}

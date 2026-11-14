@@ -1,0 +1,71 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-sans: 'DM Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono-tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer components {
+  .saas-canvas {
+    background-color: #ecf3f2;
+    background-image:
+      radial-gradient(at 12% 8%, rgba(20, 184, 166, 0.16) 0px, transparent 48%),
+      radial-gradient(at 88% 12%, rgba(14, 116, 144, 0.12) 0px, transparent 45%),
+      radial-gradient(at 72% 88%, rgba(15, 118, 110, 0.10) 0px, transparent 50%);
+    background-attachment: fixed;
+  }
+
+  .dark .saas-canvas {
+    background-color: #060f0e;
+    background-image:
+      radial-gradient(at 15% 10%, rgba(20, 184, 166, 0.15) 0px, transparent 50%),
+      radial-gradient(at 88% 14%, rgba(14, 116, 144, 0.12) 0px, transparent 46%),
+      radial-gradient(at 60% 90%, rgba(15, 118, 110, 0.09) 0px, transparent 52%);
+    background-attachment: fixed;
+  }
+
+  .glass-panel {
+    @apply bg-white/75 dark:bg-[#0f1f1d]/72 backdrop-blur-xl border border-white/85 dark:border-white/10 shadow-[0_8px_30px_rgba(15,118,110,0.06)] dark:shadow-[0_12px_36px_rgba(0,0,0,0.38)];
+  }
+
+  .glass-chrome {
+    @apply bg-white/72 dark:bg-[#0b1715]/78 backdrop-blur-2xl border-[#cfe0dd]/80 dark:border-white/10;
+  }
+
+  .glass-inset {
+    @apply bg-[#e1ecea]/75 dark:bg-[#081311]/70 border border-white/70 dark:border-white/10 backdrop-blur-md;
+  }
+
+  .glass-input {
+    @apply bg-white/85 dark:bg-[#081311]/80 border border-[#cadad7] dark:border-white/15 text-[#0f2422] dark:text-[#e6f2f0] placeholder:text-[#68807d] dark:placeholder:text-[#6f8986] backdrop-blur-sm;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
