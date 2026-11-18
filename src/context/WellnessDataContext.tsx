@@ -85,6 +85,15 @@ interface DoctorAllowlistRow {
   created_at?: string;
 }
 
+function isMissingSchemaError(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return (
+    error.code === 'PGRST205' ||
+    error.code === '42P01' ||
+    Boolean(error.message?.includes('schema cache'))
+  );
+}
+
 function mapDoctorStatusRow(row: DoctorStatusRow): DoctorStatus {
   return {
     doctorId: row.doctor_id,
@@ -226,14 +235,23 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
   );
   const [pendingDoctorRequests, setPendingDoctorRequests] = useState<DoctorAccessRequest[]>([]);
   const [allowlistEntries, setAllowlistEntries] = useState<DoctorAllowlistEntry[]>([]);
+  const [tablesAvailable, setTablesAvailable] = useState(true);
 
   const fetchPublicClinicData = useCallback(async () => {
     if (!supabase) return;
 
-    const [{ data: statusRows }, { data: rosterRows }] = await Promise.all([
-      supabase.from('doctor_statuses').select('*'),
-      supabase.from('specialist_roster').select('*'),
-    ]);
+    const [{ data: statusRows, error: statusErr }, { data: rosterRows, error: rosterErr }] =
+      await Promise.all([
+        supabase.from('doctor_statuses').select('*'),
+        supabase.from('specialist_roster').select('*'),
+      ]);
+
+    if (isMissingSchemaError(statusErr) || isMissingSchemaError(rosterErr)) {
+      setTablesAvailable(false);
+      return;
+    }
+
+    setTablesAvailable(true);
 
     if (statusRows) {
       const next: Record<string, DoctorStatus> = {};
@@ -281,11 +299,18 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
       return;
     }
 
-    const { data: moodRows } = await supabase
+    const { data: moodRows, error: moodErr } = await supabase
       .from('moods')
       .select('*')
       .eq('user_uid', user.uid)
       .order('date', { ascending: true });
+
+    if (isMissingSchemaError(moodErr)) {
+      setTablesAvailable(false);
+      return;
+    }
+
+    setTablesAvailable(true);
 
     if (moodRows) {
       setRemoteMoods((moodRows as MoodRow[]).map(mapMoodRow));
@@ -302,7 +327,11 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
       apptsQuery = apptsQuery.eq('student_uid', user.uid);
     }
 
-    const { data: apptRows } = await apptsQuery;
+    const { data: apptRows, error: apptErr } = await apptsQuery;
+    if (isMissingSchemaError(apptErr)) {
+      setTablesAvailable(false);
+      return;
+    }
     if (apptRows) {
       const mapped = (apptRows as AppointmentRow[])
         .map(mapAppointmentRow)
@@ -348,10 +377,16 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
       return;
     }
 
-    const [{ data: reqRows }, { data: allowRows }] = await Promise.all([
-      supabase.from('doctor_requests').select('*'),
-      supabase.from('doctor_allowlist').select('*'),
-    ]);
+    const [{ data: reqRows, error: reqErr }, { data: allowRows, error: allowErr }] =
+      await Promise.all([
+        supabase.from('doctor_requests').select('*'),
+        supabase.from('doctor_allowlist').select('*'),
+      ]);
+
+    if (isMissingSchemaError(reqErr) || isMissingSchemaError(allowErr)) {
+      setTablesAvailable(false);
+      return;
+    }
 
     if (reqRows) {
       setPendingDoctorRequests(
@@ -412,6 +447,15 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
     writeLocal(LOCAL_UHID_KEY, data);
   }
 
+  function saveLocalAppt(record: AppointmentRecord) {
+    const updated = [...localAppointments, record].sort((a, b) =>
+      `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`)
+    );
+    setLocalAppointments(updated);
+    writeLocal(LOCAL_APPTS_KEY, updated);
+    return record;
+  }
+
   async function bookAppointment(input: {
     doctorId: string;
     date: string;
@@ -428,13 +472,13 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
 
     const id = `appt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-    if (!supabase || !user || !profile) {
-      const localRecord: AppointmentRecord = {
+    if (!supabase || !user || !profile || !tablesAvailable) {
+      return saveLocalAppt({
         id,
-        studentUid: 'local',
-        studentName: sanitize(input.studentName || localUhid.name || 'Student', 100),
-        studentRoll: sanitize(input.studentRoll || localUhid.roll || '', 30),
-        studentUhid: sanitize(input.studentUhid || localUhid.uhid || '', 40),
+        studentUid: user?.uid || 'local',
+        studentName: sanitize(input.studentName || profile?.displayName || localUhid.name || 'Student', 100),
+        studentRoll: sanitize(input.studentRoll ?? profile?.rollNumber ?? localUhid.roll ?? '', 30),
+        studentUhid: sanitize(input.studentUhid ?? profile?.uhid ?? localUhid.uhid ?? '', 40),
         doctorId: practitioner.id,
         doctorName: practitioner.name,
         doctorSpec: practitioner.spec,
@@ -445,13 +489,7 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
         doctorNotes: '',
         status: 'pending',
         isLocalOnly: true,
-      };
-      const updated = [...localAppointments, localRecord].sort((a, b) =>
-        `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`)
-      );
-      setLocalAppointments(updated);
-      writeLocal(LOCAL_APPTS_KEY, updated);
-      return localRecord;
+      });
     }
 
     const assignedDoctorUid = doctorStatuses[practitioner.id]?.assignedUid || null;
@@ -479,6 +517,26 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
       .single<AppointmentRow>();
 
     if (error) {
+      if (isMissingSchemaError(error)) {
+        setTablesAvailable(false);
+        return saveLocalAppt({
+          id,
+          studentUid: user.uid,
+          studentName: rowPayload.student_name,
+          studentRoll: rowPayload.student_roll,
+          studentUhid: rowPayload.student_uhid,
+          doctorId: rowPayload.doctor_id,
+          doctorName: rowPayload.doctor_name,
+          doctorSpec: rowPayload.doctor_spec,
+          assignedDoctorUid: '',
+          date: rowPayload.date,
+          time: rowPayload.time,
+          reason: rowPayload.reason,
+          doctorNotes: '',
+          status: 'pending',
+          isLocalOnly: true,
+        });
+      }
       throw new Error(error.message);
     }
 
@@ -490,7 +548,7 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
   }
 
   async function cancelAppointment(appt: AppointmentRecord) {
-    if (appt.isLocalOnly || !supabase || !user) {
+    if (appt.isLocalOnly || !supabase || !user || !tablesAvailable) {
       const updated = localAppointments.filter((a) => a.id !== appt.id);
       setLocalAppointments(updated);
       writeLocal(LOCAL_APPTS_KEY, updated);
@@ -542,7 +600,7 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
     const cleanScore = Math.min(5, Math.max(1, Math.round(score)));
     const cleanNote = sanitize(note, 500);
 
-    if (!supabase || !user) {
+    const saveMoodLocal = () => {
       const next = localMoods
         .filter((m) => m.date !== cleanDate)
         .concat([{ date: cleanDate, score: cleanScore, note: cleanNote }])
@@ -550,6 +608,10 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
         .slice(-90);
       setLocalMoods(next);
       writeLocal(LOCAL_MOODS_KEY, next);
+    };
+
+    if (!supabase || !user || !tablesAvailable) {
+      saveMoodLocal();
       return;
     }
 
@@ -565,6 +627,11 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
     );
 
     if (error) {
+      if (isMissingSchemaError(error)) {
+        setTablesAvailable(false);
+        saveMoodLocal();
+        return;
+      }
       throw new Error(error.message);
     }
     await fetchUserScopedData();
@@ -689,8 +756,8 @@ export function WellnessDataProvider({ children }: { children: React.ReactNode }
     await fetchAdminData();
   }
 
-  const appointments = user ? remoteAppointments : localAppointments;
-  const moods = user ? remoteMoods : localMoods;
+  const appointments = user && tablesAvailable ? remoteAppointments : localAppointments;
+  const moods = user && tablesAvailable ? remoteMoods : localMoods;
 
   return (
     <WellnessDataContext.Provider

@@ -1,7 +1,9 @@
 import 'dotenv/config';
+import crypto from 'node:crypto';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -10,7 +12,94 @@ const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT) || 3000;
 const isProduction = process.env.NODE_ENV === 'production';
 
+const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').trim();
+const SUPABASE_SECRET_KEY = (process.env.SUPABASE_SECRET_KEY || '').trim();
+const SUPABASE_JWKS_URL = (
+  process.env.SUPABASE_JWKS_URL ||
+  (SUPABASE_URL ? `${SUPABASE_URL.replace(/\/$/, '')}/auth/v1/.well-known/jwks.json` : '')
+).trim();
+
 let geminiClient: GoogleGenAI | null = null;
+let supabaseAdminClient: SupabaseClient | null = null;
+let cachedJwks: { keys: Array<JsonWebKey & { kid?: string; alg?: string }>; fetchedAt: number } | null = null;
+
+function getSupabaseAdmin(): SupabaseClient | null {
+  if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) return null;
+  if (!supabaseAdminClient) {
+    supabaseAdminClient = createClient(SUPABASE_URL, SUPABASE_SECRET_KEY, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+    });
+  }
+  return supabaseAdminClient;
+}
+
+async function getJwksKeys() {
+  if (!SUPABASE_JWKS_URL) {
+    throw new Error('SUPABASE_JWKS_URL is not configured on the server.');
+  }
+  const now = Date.now();
+  if (cachedJwks && now - cachedJwks.fetchedAt < 5 * 60 * 1000) {
+    return cachedJwks.keys;
+  }
+  const resp = await fetch(SUPABASE_JWKS_URL);
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch JWKS (${resp.status}).`);
+  }
+  const body = (await resp.json()) as { keys?: Array<JsonWebKey & { kid?: string; alg?: string }> };
+  const keys = Array.isArray(body.keys) ? body.keys : [];
+  cachedJwks = { keys, fetchedAt: now };
+  return keys;
+}
+
+function decodeBase64Url(input: string): Buffer {
+  const padded = input.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((input.length + 3) % 4);
+  return Buffer.from(padded, 'base64');
+}
+
+async function verifySupabaseJwt(token: string): Promise<Record<string, unknown>> {
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    throw new Error('Malformed JWT.');
+  }
+  const [headerB64, payloadB64, signatureB64] = parts;
+  const header = JSON.parse(decodeBase64Url(headerB64).toString('utf8')) as {
+    kid?: string;
+    alg?: string;
+  };
+  const payload = JSON.parse(decodeBase64Url(payloadB64).toString('utf8')) as Record<string, unknown>;
+
+  const keys = await getJwksKeys();
+  const jwk = keys.find((k) => (!header.kid || k.kid === header.kid));
+  if (!jwk) {
+    throw new Error('Matching signing key not found in JWKS.');
+  }
+
+  const publicKey = crypto.createPublicKey({ key: jwk as crypto.JsonWebKey, format: 'jwk' });
+  const signingInput = Buffer.from(`${headerB64}.${payloadB64}`, 'utf8');
+  const signature = decodeBase64Url(signatureB64);
+
+  const alg = header.alg || jwk.alg || 'ES256';
+  const valid =
+    alg === 'ES256'
+      ? crypto.verify('sha256', signingInput, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature)
+      : alg === 'RS256'
+        ? crypto.verify('RSA-SHA256', signingInput, publicKey, signature)
+        : false;
+
+  if (!valid) {
+    throw new Error('Invalid JWT signature.');
+  }
+
+  const exp = typeof payload.exp === 'number' ? payload.exp : 0;
+  if (exp && Math.floor(Date.now() / 1000) >= exp) {
+    throw new Error('JWT has expired.');
+  }
+
+  return payload;
+}
 
 function getGeminiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -187,6 +276,40 @@ async function startServer() {
       },
       res
     );
+  });
+
+  app.get('/api/auth/verify', async (req, res) => {
+    const authHeader = req.headers.authorization || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    if (!token) {
+      res.status(401).json({ error: 'Missing Bearer token.' });
+      return;
+    }
+
+    try {
+      const claims = await verifySupabaseJwt(token);
+      res.json({
+        verified: true,
+        uid: typeof claims.sub === 'string' ? claims.sub : '',
+        email: typeof claims.email === 'string' ? claims.email : '',
+      });
+    } catch (jwksError) {
+      const admin = getSupabaseAdmin();
+      if (admin) {
+        const { data, error } = await admin.auth.getUser(token);
+        if (!error && data.user) {
+          res.json({
+            verified: true,
+            uid: data.user.id,
+            email: data.user.email || '',
+          });
+          return;
+        }
+      }
+      res.status(401).json({
+        error: jwksError instanceof Error ? jwksError.message : 'Invalid Supabase token.',
+      });
+    }
   });
 
   app.use('/api', (_req, res) => {

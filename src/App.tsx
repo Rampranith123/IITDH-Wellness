@@ -83,7 +83,7 @@ function parseHash(): { view: AppView; arg: string } {
 }
 
 function WellnessShell() {
-  const { profile, isVerifiedDoctor } = useAuth();
+  const { profile, isVerifiedDoctor, passwordRecoveryPending } = useAuth();
   const [route, setRoute] = useState<{ view: AppView; arg: string }>(() => parseHash());
   const [, setMinuteTick] = useState(0);
   const [activeAlerts, setActiveAlerts] = useState<HealthReminder[]>([]);
@@ -106,6 +106,13 @@ function WellnessShell() {
       // ignore
     }
   }, [darkMode]);
+
+  useEffect(() => {
+    if (passwordRecoveryPending && route.view !== 'auth') {
+      window.location.hash = '#/auth';
+      setRoute({ view: 'auth', arg: '' });
+    }
+  }, [passwordRecoveryPending, route.view]);
 
   useEffect(() => {
     const onHash = () => setRoute(parseHash());

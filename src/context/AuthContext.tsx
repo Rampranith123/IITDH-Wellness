@@ -13,11 +13,13 @@ import type {
 } from '../types/wellness';
 
 const PENDING_PORTAL_KEY = 'iitdh_pending_portal';
+const LOCAL_PROFILE_PREFIX = 'iitdh_profile_cache_v1:';
 
 export interface AuthUserSummary {
   uid: string;
   email: string;
   displayName: string;
+  requestedPortal?: UserRole;
 }
 
 interface ProfileRow {
@@ -98,11 +100,42 @@ function toAuthSummary(sbUser: SupabaseUser | null): AuthUserSummary | null {
     (typeof meta.name === 'string' && meta.name) ||
     sbUser.email?.split('@')[0] ||
     'IIT Dharwad Member';
+  const requestedPortal =
+    meta.requested_portal === 'doctor' || meta.requested_portal === 'student'
+      ? meta.requested_portal
+      : undefined;
   return {
     uid: sbUser.id,
     email: sbUser.email || '',
     displayName: rawName,
+    requestedPortal,
   };
+}
+
+function readCachedProfile(uid: string): UserProfile | null {
+  try {
+    const raw = localStorage.getItem(`${LOCAL_PROFILE_PREFIX}${uid}`);
+    return raw ? (JSON.parse(raw) as UserProfile) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedProfile(prof: UserProfile) {
+  try {
+    localStorage.setItem(`${LOCAL_PROFILE_PREFIX}${prof.uid}`, JSON.stringify(prof));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function isMissingSchemaError(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return (
+    error.code === 'PGRST205' ||
+    error.code === '42P01' ||
+    Boolean(error.message?.includes('schema cache'))
+  );
 }
 
 interface AuthContextValue {
@@ -112,6 +145,8 @@ interface AuthContextValue {
   signingInPortal: UserRole | null;
   authError: string | null;
   authNotice: string | null;
+  unconfirmedEmail: string | null;
+  passwordRecoveryPending: boolean;
   profile: UserProfile | null;
   allowlistEntry: DoctorAllowlistEntry | null;
   doctorRequest: DoctorAccessRequest | null;
@@ -125,7 +160,9 @@ interface AuthContextValue {
     mode: 'signin' | 'signup',
     fullName?: string
   ) => Promise<'signed-in' | 'needs-verification' | 'check-email' | 'error'>;
-  signInWithGooglePortal: (portal: UserRole) => Promise<void>;
+  resendSignupConfirmation: (email: string) => Promise<void>;
+  sendPasswordResetEmail: (email: string) => Promise<void>;
+  updateAccountPassword: (newPassword: string) => Promise<boolean>;
   signOutUser: () => Promise<void>;
   updateStudentProfile: (data: {
     displayName: string;
@@ -154,6 +191,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [signingInPortal, setSigningInPortal] = useState<UserRole | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
+  const [unconfirmedEmail, setUnconfirmedEmail] = useState<string | null>(null);
+  const [passwordRecoveryPending, setPasswordRecoveryPending] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [allowlistEntry, setAllowlistEntry] = useState<DoctorAllowlistEntry | null>(null);
   const [doctorRequest, setDoctorRequest] = useState<DoctorAccessRequest | null>(null);
@@ -165,35 +204,69 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const isVerifiedDoctor = Boolean(isAdmin || allowlistEntry);
   const needsDoctorVerification = Boolean(user && pendingDoctorFlow && !isVerifiedDoctor);
 
+  const buildFallbackProfile = useCallback(
+    (summary: AuthUserSummary, role: UserRole, linkedDoctorId = ''): UserProfile => {
+      const cached = readCachedProfile(summary.uid);
+      const next: UserProfile = {
+        uid: summary.uid,
+        displayName: cached?.displayName || sanitizeStr(summary.displayName || 'IITDH Member', 100),
+        email: sanitizeStr(summary.email, 150),
+        role,
+        rollNumber: cached?.rollNumber || '',
+        uhid: cached?.uhid || '',
+        hostelOrDept: cached?.hostelOrDept || '',
+        linkedDoctorId: linkedDoctorId || cached?.linkedDoctorId || '',
+      };
+      writeCachedProfile(next);
+      return next;
+    },
+    []
+  );
+
   const ensureUserProfile = useCallback(
     async (
       summary: AuthUserSummary,
       requestedPortal: UserRole
     ): Promise<'signed-in' | 'needs-verification'> => {
-      if (!supabase) return 'signed-in';
-
       const emailLower = summary.email.toLowerCase();
       const userIsAdmin = emailLower === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
 
+      if (!supabase) {
+        const fallbackRole: UserRole =
+          requestedPortal === 'doctor' && userIsAdmin ? 'doctor' : 'student';
+        setProfile(buildFallbackProfile(summary, fallbackRole));
+        return 'signed-in';
+      }
+
       let allowDoc: DoctorAllowlistEntry | null = null;
       if (summary.email) {
-        const { data: allowRow } = await supabase
+        const { data: allowRow, error: allowErr } = await supabase
           .from('doctor_allowlist')
           .select('*')
           .ilike('email', summary.email)
           .maybeSingle<AllowlistRow>();
-        if (allowRow) {
+        if (!allowErr && allowRow) {
           allowDoc = mapAllowlistRow(allowRow);
           setAllowlistEntry(allowDoc);
         }
       }
 
       const canBeDoctor = userIsAdmin || Boolean(allowDoc);
-      const { data: existingProfileRow } = await supabase
+      const { data: existingProfileRow, error: fetchErr } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', summary.uid)
         .maybeSingle<ProfileRow>();
+
+      if (isMissingSchemaError(fetchErr)) {
+        const needsVerify = requestedPortal === 'doctor' && !canBeDoctor;
+        setPendingDoctorFlow(needsVerify);
+        const fallbackRole: UserRole =
+          requestedPortal === 'doctor' && canBeDoctor ? 'doctor' : 'student';
+        const fallbackDocId = fallbackRole === 'doctor' ? 'aravind' : '';
+        setProfile(buildFallbackProfile(summary, fallbackRole, fallbackDocId));
+        return needsVerify ? 'needs-verification' : 'signed-in';
+      }
 
       if (requestedPortal === 'doctor' && !canBeDoctor) {
         if (!existingProfileRow) {
@@ -211,9 +284,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             })
             .select()
             .single<ProfileRow>();
-          if (inserted) setProfile(mapProfileRow(inserted));
+          const prof = inserted
+            ? mapProfileRow(inserted)
+            : buildFallbackProfile(summary, 'student');
+          writeCachedProfile(prof);
+          setProfile(prof);
         } else {
-          setProfile(mapProfileRow(existingProfileRow));
+          const prof = mapProfileRow(existingProfileRow);
+          writeCachedProfile(prof);
+          setProfile(prof);
         }
         setPendingDoctorFlow(true);
         return 'needs-verification';
@@ -243,9 +322,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           .select()
           .single<ProfileRow>();
         if (error) {
-          console.error('Supabase profile creation failed:', error.message);
+          setProfile(buildFallbackProfile(summary, targetRole, assignedDocId));
         } else if (inserted) {
-          setProfile(mapProfileRow(inserted));
+          const prof = mapProfileRow(inserted);
+          writeCachedProfile(prof);
+          setProfile(prof);
         }
       } else if (
         existingProfileRow.role !== targetRole &&
@@ -262,47 +343,68 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           .select()
           .single<ProfileRow>();
         if (error) {
-          console.error('Supabase profile role update failed:', error.message);
+          const prof = mapProfileRow(existingProfileRow);
+          setProfile(prof);
         } else if (updated) {
-          setProfile(mapProfileRow(updated));
+          const prof = mapProfileRow(updated);
+          writeCachedProfile(prof);
+          setProfile(prof);
         }
       } else {
-        setProfile(mapProfileRow(existingProfileRow));
+        const prof = mapProfileRow(existingProfileRow);
+        writeCachedProfile(prof);
+        setProfile(prof);
       }
 
       return 'signed-in';
     },
-    []
+    [buildFallbackProfile]
   );
 
-  const loadUserRecords = useCallback(async (summary: AuthUserSummary) => {
-    if (!supabase) return;
+  const loadUserRecords = useCallback(
+    async (summary: AuthUserSummary) => {
+      if (!supabase) return;
 
-    const { data: profRow } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', summary.uid)
-      .maybeSingle<ProfileRow>();
-    if (profRow) {
-      setProfile(mapProfileRow(profRow));
-    }
-
-    if (summary.email) {
-      const { data: allowRow } = await supabase
-        .from('doctor_allowlist')
+      const userIsAdmin = summary.email.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
+      const { data: profRow, error: profErr } = await supabase
+        .from('profiles')
         .select('*')
-        .ilike('email', summary.email)
-        .maybeSingle<AllowlistRow>();
-      setAllowlistEntry(allowRow ? mapAllowlistRow(allowRow) : null);
-    }
+        .eq('id', summary.uid)
+        .maybeSingle<ProfileRow>();
 
-    const { data: reqRow } = await supabase
-      .from('doctor_requests')
-      .select('*')
-      .eq('uid', summary.uid)
-      .maybeSingle<DoctorRequestRow>();
-    setDoctorRequest(reqRow ? mapRequestRow(reqRow) : null);
-  }, []);
+      if (isMissingSchemaError(profErr)) {
+        const role: UserRole =
+          summary.requestedPortal === 'doctor' && userIsAdmin ? 'doctor' : 'student';
+        setProfile(buildFallbackProfile(summary, role, role === 'doctor' ? 'aravind' : ''));
+        return;
+      }
+
+      if (profRow) {
+        const mapped = mapProfileRow(profRow);
+        writeCachedProfile(mapped);
+        setProfile(mapped);
+      } else {
+        await ensureUserProfile(summary, summary.requestedPortal || 'student');
+      }
+
+      if (summary.email) {
+        const { data: allowRow } = await supabase
+          .from('doctor_allowlist')
+          .select('*')
+          .ilike('email', summary.email)
+          .maybeSingle<AllowlistRow>();
+        setAllowlistEntry(allowRow ? mapAllowlistRow(allowRow) : null);
+      }
+
+      const { data: reqRow } = await supabase
+        .from('doctor_requests')
+        .select('*')
+        .eq('uid', summary.uid)
+        .maybeSingle<DoctorRequestRow>();
+      setDoctorRequest(reqRow ? mapRequestRow(reqRow) : null);
+    },
+    [buildFallbackProfile, ensureUserProfile]
+  );
 
   useEffect(() => {
     if (!supabase) {
@@ -350,7 +452,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setPasswordRecoveryPending(true);
+      }
       void syncSession(session?.user ?? null);
     });
 
@@ -372,7 +477,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.uid}` },
         (payload) => {
           if (payload.new && typeof payload.new === 'object' && 'id' in payload.new) {
-            setProfile(mapProfileRow(payload.new as ProfileRow));
+            const prof = mapProfileRow(payload.new as ProfileRow);
+            writeCachedProfile(prof);
+            setProfile(prof);
           }
         }
       )
@@ -408,11 +515,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   ): Promise<'signed-in' | 'needs-verification' | 'check-email' | 'error'> {
     setAuthError(null);
     setAuthNotice(null);
+    setUnconfirmedEmail(null);
 
     if (!supabase) {
-      setAuthError(
-        'Supabase is not configured yet. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Settings > Secrets.'
-      );
+      setAuthError('Supabase authentication is not configured.');
       return 'error';
     }
 
@@ -440,6 +546,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 fullName || cleanEmail.split('@')[0] || 'IIT Dharwad Member',
                 100
               ),
+              requested_portal: portal,
             },
             emailRedirectTo: window.location.origin,
           },
@@ -451,8 +558,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
 
         if (!data.session && data.user) {
+          setUnconfirmedEmail(cleanEmail);
           setAuthNotice(
-            `Confirmation link sent to ${cleanEmail}. Check your inbox, then sign in here.`
+            `Confirmation link sent to ${cleanEmail}. Check your inbox and verify your email, then sign in here.`
           );
           return 'check-email';
         }
@@ -469,6 +577,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       });
 
       if (error) {
+        if (
+          error.code === 'email_not_confirmed' ||
+          error.message.toLowerCase().includes('email not confirmed')
+        ) {
+          setUnconfirmedEmail(cleanEmail);
+        }
         setAuthError(error.message);
         return 'error';
       }
@@ -485,46 +599,71 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  async function signInWithGooglePortal(portal: UserRole) {
+  async function resendSignupConfirmation(email: string) {
     setAuthError(null);
     setAuthNotice(null);
-
-    if (!supabase) {
-      setAuthError(
-        'Supabase is not configured yet. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Settings > Secrets.'
-      );
+    if (!supabase) return;
+    const cleanEmail = sanitizeStr(email, 150);
+    if (!cleanEmail) {
+      setAuthError('Please enter your email address first.');
       return;
     }
-
-    setSigningInPortal(portal);
-    try {
-      try {
-        sessionStorage.setItem(PENDING_PORTAL_KEY, portal);
-      } catch {
-        // ignore
-      }
-
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin,
-          queryParams: { prompt: 'select_account' },
-        },
-      });
-
-      if (error) {
-        setAuthError(error.message);
-        setSigningInPortal(null);
-      }
-    } catch (err) {
-      setAuthError(err instanceof Error ? err.message : 'Unable to start Google sign-in.');
-      setSigningInPortal(null);
+    const { error } = await supabase.auth.resend({
+      type: 'signup',
+      email: cleanEmail,
+      options: {
+        emailRedirectTo: window.location.origin,
+      },
+    });
+    if (error) {
+      setAuthError(error.message);
+      return;
     }
+    setAuthNotice(`A new verification email was sent to ${cleanEmail}. Check your inbox or spam folder.`);
+  }
+
+  async function sendPasswordResetEmail(email: string) {
+    setAuthError(null);
+    setAuthNotice(null);
+    if (!supabase) return;
+    const cleanEmail = sanitizeStr(email, 150);
+    if (!cleanEmail) {
+      setAuthError('Enter your email address first to receive a password reset link.');
+      return;
+    }
+    const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo: window.location.origin,
+    });
+    if (error) {
+      setAuthError(error.message);
+      return;
+    }
+    setAuthNotice(`Password reset link sent to ${cleanEmail}. Check your inbox to set a new password.`);
+  }
+
+  async function updateAccountPassword(newPassword: string): Promise<boolean> {
+    setAuthError(null);
+    setAuthNotice(null);
+    if (!supabase) return false;
+    if (newPassword.length < 6) {
+      setAuthError('Password must be at least 6 characters.');
+      return false;
+    }
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) {
+      setAuthError(error.message);
+      return false;
+    }
+    setPasswordRecoveryPending(false);
+    setAuthNotice('Password updated successfully. You are now signed in.');
+    return true;
   }
 
   async function signOutUser() {
     setAuthError(null);
     setAuthNotice(null);
+    setUnconfirmedEmail(null);
+    setPasswordRecoveryPending(false);
     setPendingDoctorFlow(false);
     if (supabase) {
       await supabase.auth.signOut();
@@ -541,14 +680,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     uhid: string;
     hostelOrDept: string;
   }) {
-    if (!supabase || !user) return;
+    if (!user) return;
+    const nextLocal: UserProfile = {
+      uid: user.uid,
+      displayName: sanitizeStr(data.displayName || user.displayName || 'Student', 100),
+      email: user.email,
+      role: profile?.role || 'student',
+      rollNumber: sanitizeStr(data.rollNumber, 30),
+      uhid: sanitizeStr(data.uhid, 40),
+      hostelOrDept: sanitizeStr(data.hostelOrDept, 80),
+      linkedDoctorId: profile?.linkedDoctorId || '',
+    };
+    writeCachedProfile(nextLocal);
+    setProfile(nextLocal);
+
+    if (!supabase) return;
     const { data: updated, error } = await supabase
       .from('profiles')
       .update({
-        display_name: sanitizeStr(data.displayName || user.displayName || 'Student', 100),
-        roll_number: sanitizeStr(data.rollNumber, 30),
-        uhid: sanitizeStr(data.uhid, 40),
-        hostel_or_dept: sanitizeStr(data.hostelOrDept, 80),
+        display_name: nextLocal.displayName,
+        roll_number: nextLocal.rollNumber,
+        uhid: nextLocal.uhid,
+        hostel_or_dept: nextLocal.hostelOrDept,
         updated_at: new Date().toISOString(),
       })
       .eq('id', user.uid)
@@ -556,16 +709,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .single<ProfileRow>();
 
     if (error) {
-      setAuthError(error.message);
+      if (!isMissingSchemaError(error)) {
+        setAuthError(error.message);
+      }
       return;
     }
     if (updated) {
-      setProfile(mapProfileRow(updated));
+      const prof = mapProfileRow(updated);
+      writeCachedProfile(prof);
+      setProfile(prof);
     }
   }
 
   async function switchPortalRole(targetRole: UserRole, linkedDoctorId?: string) {
-    if (!supabase || !user) return;
+    if (!user) return;
     if (targetRole === 'doctor' && !isVerifiedDoctor) {
       setPendingDoctorFlow(true);
       return;
@@ -576,11 +733,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? sanitizeStr(linkedDoctorId, 64)
         : allowlistEntry?.assignedDoctorId || profile?.linkedDoctorId || 'aravind';
 
+    const nextLocal: UserProfile = {
+      ...(profile || buildFallbackProfile(user, targetRole, nextLinked)),
+      role: targetRole,
+      linkedDoctorId: targetRole === 'doctor' ? nextLinked : profile?.linkedDoctorId || '',
+    };
+    writeCachedProfile(nextLocal);
+    setProfile(nextLocal);
+    setPendingDoctorFlow(false);
+
+    if (!supabase) return;
     const { data: updated, error } = await supabase
       .from('profiles')
       .update({
         role: targetRole,
-        linked_doctor_id: targetRole === 'doctor' ? nextLinked : profile?.linkedDoctorId || '',
+        linked_doctor_id: nextLocal.linkedDoctorId,
         updated_at: new Date().toISOString(),
       })
       .eq('id', user.uid)
@@ -588,13 +755,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .single<ProfileRow>();
 
     if (error) {
-      setAuthError(error.message);
+      if (!isMissingSchemaError(error)) {
+        setAuthError(error.message);
+      }
       return;
     }
     if (updated) {
-      setProfile(mapProfileRow(updated));
+      const prof = mapProfileRow(updated);
+      writeCachedProfile(prof);
+      setProfile(prof);
     }
-    setPendingDoctorFlow(false);
   }
 
   async function submitDoctorVerificationRequest(data: {
@@ -639,6 +809,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         signingInPortal,
         authError,
         authNotice,
+        unconfirmedEmail,
+        passwordRecoveryPending,
         profile,
         allowlistEntry,
         doctorRequest,
@@ -646,7 +818,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isVerifiedDoctor,
         needsDoctorVerification,
         signInWithEmailPortal,
-        signInWithGooglePortal,
+        resendSignupConfirmation,
+        sendPasswordResetEmail,
+        updateAccountPassword,
         signOutUser,
         updateStudentProfile,
         switchPortalRole,
@@ -654,6 +828,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         clearAuthError: () => {
           setAuthError(null);
           setAuthNotice(null);
+          setUnconfirmedEmail(null);
         },
       }}
     >

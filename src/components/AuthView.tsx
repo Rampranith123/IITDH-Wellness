@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   Clock,
   GraduationCap,
-  Info,
   LogOut,
   ShieldCheck,
   Stethoscope,
@@ -20,17 +19,20 @@ interface AuthViewProps {
 export function AuthView({ onNavigate }: AuthViewProps) {
   const {
     user,
-    isSupabaseConfigured,
     profile,
     signingInPortal,
     authError,
     authNotice,
+    unconfirmedEmail,
+    passwordRecoveryPending,
     isAdmin,
     isVerifiedDoctor,
     needsDoctorVerification,
     doctorRequest,
     signInWithEmailPortal,
-    signInWithGooglePortal,
+    resendSignupConfirmation,
+    sendPasswordResetEmail,
+    updateAccountPassword,
     signOutUser,
     updateStudentProfile,
     switchPortalRole,
@@ -61,6 +63,10 @@ export function AuthView({ onNavigate }: AuthViewProps) {
   const [doctorEmail, setDoctorEmail] = useState('');
   const [doctorPassword, setDoctorPassword] = useState('');
 
+  // Password Recovery Update State
+  const [recoveryPassword, setRecoveryPassword] = useState('');
+  const [updatingRecovery, setUpdatingRecovery] = useState(false);
+
   useEffect(() => {
     if (profile) {
       setDisplayName(profile.displayName || '');
@@ -86,11 +92,6 @@ export function AuthView({ onNavigate }: AuthViewProps) {
     if (res === 'signed-in') {
       onNavigate(portal === 'doctor' ? 'doctor-portal' : 'me');
     }
-  }
-
-  async function handleGoogleSignIn(portal: UserRole) {
-    clearAuthError();
-    await signInWithGooglePortal(portal);
   }
 
   async function handleSaveStudentProfile(e: React.FormEvent) {
@@ -121,51 +122,94 @@ export function AuthView({ onNavigate }: AuthViewProps) {
       {/* Header */}
       <div className="border-b border-[#cfe0dd]/70 dark:border-white/10 pb-6">
         <p className="text-xs font-medium text-[#476360] dark:text-[#9ab3b0]">
-          IIT Dharwad Wellness Centre · Account Access
+          IIT Dharwad Wellness Centre · Email Account Access
         </p>
         <h1 className="mt-2 font-display text-2xl sm:text-3xl font-bold tracking-tight text-[#0f2422] dark:text-white text-balance">
           {user ? 'Account & Portal Access' : 'Sign in to Student or Doctor Portal'}
         </h1>
         <p className="mt-2 max-w-2xl text-sm sm:text-base text-[#476360] dark:text-[#9ab3b0]">
-          Students and Wellness Centre practitioners sign in separately so medical appointments,
-          UHID cards, and live OPD schedules stay cleanly separated and private.
+          Students and Wellness Centre practitioners sign in separately with email and password so
+          medical appointments, UHID cards, and live OPD schedules stay cleanly separated and private.
         </p>
       </div>
-
-      {!isSupabaseConfigured && (
-        <div
-          role="status"
-          className="rounded-2xl glass-panel border-amber-300/70 dark:border-amber-500/30 bg-amber-50/80 dark:bg-amber-950/30 px-4 py-3.5 flex items-start gap-3 text-sm text-amber-900 dark:text-amber-200"
-        >
-          <Info className="w-5 h-5 shrink-0 mt-0.5 text-amber-700 dark:text-amber-400" />
-          <div>
-            <p className="font-semibold">Supabase secrets not configured yet</p>
-            <p className="text-xs sm:text-sm opacity-90 mt-0.5">
-              Add <span className="font-mono-tabular">VITE_SUPABASE_URL</span> and{' '}
-              <span className="font-mono-tabular">VITE_SUPABASE_ANON_KEY</span> in{' '}
-              <strong>Settings &gt; Secrets</strong> and run the SQL schema to enable cloud sign-in
-              and sync. Guest local mode remains active in the meantime.
-            </p>
-          </div>
-        </div>
-      )}
 
       {authError && (
         <div
           role="alert"
-          className="rounded-2xl border border-red-300/70 dark:border-red-500/30 bg-red-50/85 dark:bg-red-950/40 backdrop-blur-md px-4 py-3 text-sm text-red-800 dark:text-red-200"
+          className="rounded-2xl border border-red-300/70 dark:border-red-500/30 bg-red-50/85 dark:bg-red-950/40 backdrop-blur-md px-4 py-3 text-sm text-red-800 dark:text-red-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
         >
-          {authError}
+          <span>{authError}</span>
+          {unconfirmedEmail && (
+            <button
+              type="button"
+              onClick={() => void resendSignupConfirmation(unconfirmedEmail)}
+              className="shrink-0 self-start sm:self-auto px-3 py-1.5 rounded-lg border border-red-400/60 dark:border-red-400/40 text-xs font-semibold hover:bg-red-100/70 dark:hover:bg-red-900/40 transition-colors cursor-pointer"
+            >
+              Resend confirmation email
+            </button>
+          )}
         </div>
       )}
 
       {authNotice && (
         <div
           role="status"
-          className="rounded-2xl border border-emerald-300/70 dark:border-emerald-500/30 bg-emerald-50/85 dark:bg-emerald-950/40 backdrop-blur-md px-4 py-3 text-sm text-emerald-900 dark:text-emerald-200"
+          className="rounded-2xl border border-emerald-300/70 dark:border-emerald-500/30 bg-emerald-50/85 dark:bg-emerald-950/40 backdrop-blur-md px-4 py-3 text-sm text-emerald-900 dark:text-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
         >
-          {authNotice}
+          <span>{authNotice}</span>
+          {unconfirmedEmail && (
+            <button
+              type="button"
+              onClick={() => void resendSignupConfirmation(unconfirmedEmail)}
+              className="shrink-0 self-start sm:self-auto px-3 py-1.5 rounded-lg border border-emerald-500/40 text-xs font-semibold hover:bg-emerald-100/70 dark:hover:bg-emerald-900/40 transition-colors cursor-pointer"
+            >
+              Resend confirmation email
+            </button>
+          )}
         </div>
+      )}
+
+      {passwordRecoveryPending && (
+        <form
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setUpdatingRecovery(true);
+            const ok = await updateAccountPassword(recoveryPassword);
+            setUpdatingRecovery(false);
+            if (ok) {
+              setRecoveryPassword('');
+            }
+          }}
+          className="rounded-2xl glass-panel p-5 sm:p-6 space-y-4 border border-teal-400/60 dark:border-teal-500/30"
+        >
+          <div>
+            <h2 className="font-display text-lg font-bold text-[#0f2422] dark:text-white">
+              Set a New Password
+            </h2>
+            <p className="text-xs sm:text-sm text-[#476360] dark:text-[#9ab3b0] mt-1">
+              Enter your new password below to finish resetting your account credentials.
+            </p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <input
+              type="password"
+              required
+              minLength={6}
+              autoComplete="new-password"
+              value={recoveryPassword}
+              onChange={(e) => setRecoveryPassword(e.target.value)}
+              placeholder="New password (min 6 characters)"
+              className="flex-1 min-h-[42px] rounded-xl glass-input px-3 py-2 text-sm focus:outline-2 focus:outline-[#0f766e]"
+            />
+            <button
+              type="submit"
+              disabled={updatingRecovery}
+              className="min-h-[42px] px-5 py-2 rounded-xl bg-[#0f766e] text-white dark:bg-[#2dd4bf] dark:text-[#06201d] text-sm font-semibold disabled:opacity-60 cursor-pointer"
+            >
+              {updatingRecovery ? 'Updating...' : 'Update Password'}
+            </button>
+          </div>
+        </form>
       )}
 
       {/* Signed-in Account View */}
@@ -404,7 +448,7 @@ export function AuthView({ onNavigate }: AuthViewProps) {
         </div>
       )}
 
-      {/* Dual Separate Sign-In Portals */}
+      {/* Dual Separate Email Sign-In Portals */}
       <div className="grid md:grid-cols-2 gap-6 items-stretch">
         {/* Student Sign-In Portal */}
         <section className="flex flex-col justify-between rounded-2xl glass-panel p-6 sm:p-7 space-y-6">
@@ -451,8 +495,9 @@ export function AuthView({ onNavigate }: AuthViewProps) {
             </div>
 
             <p className="mt-4 text-sm leading-relaxed text-[#476360] dark:text-[#9ab3b0]">
-              Book appointments with Wellness Centre doctors and counsellors, store your UHID card,
-              and maintain your private mood check-in log across devices.
+              Sign in with your email to book appointments with Wellness Centre doctors and
+              counsellors, store your UHID card, and maintain your private mood check-in log across
+              devices.
             </p>
 
             <ul className="mt-4 space-y-2 text-xs sm:text-sm text-[#263f3c] dark:text-[#c7dcd9]">
@@ -462,7 +507,7 @@ export function AuthView({ onNavigate }: AuthViewProps) {
               </li>
               <li className="flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-[#0f766e] dark:text-[#2dd4bf] shrink-0" />
-                <span>Private mood journal synced via Supabase Row-Level Security</span>
+                <span>Private mood journal synced to your account</span>
               </li>
             </ul>
           </div>
@@ -485,6 +530,7 @@ export function AuthView({ onNavigate }: AuthViewProps) {
             <input
               type="email"
               required
+              autoComplete="email"
               value={studentEmail}
               onChange={(e) => setStudentEmail(e.target.value)}
               placeholder="Student email (e.g., roll@iitdh.ac.in)"
@@ -494,11 +540,23 @@ export function AuthView({ onNavigate }: AuthViewProps) {
               type="password"
               required
               minLength={6}
+              autoComplete={studentAuthMode === 'signup' ? 'new-password' : 'current-password'}
               value={studentPassword}
               onChange={(e) => setStudentPassword(e.target.value)}
               placeholder="Password (min 6 characters)"
               className="w-full min-h-[42px] rounded-xl glass-input px-3 py-2 text-sm focus:outline-2 focus:outline-[#0f766e]"
             />
+            {studentAuthMode === 'signin' && (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => void sendPasswordResetEmail(studentEmail)}
+                  className="text-xs font-medium text-[#0f766e] dark:text-[#2dd4bf] hover:underline cursor-pointer"
+                >
+                  Forgot password?
+                </button>
+              </div>
+            )}
             <button
               type="submit"
               disabled={signingInPortal !== null}
@@ -509,14 +567,6 @@ export function AuthView({ onNavigate }: AuthViewProps) {
                 : studentAuthMode === 'signup'
                   ? 'Create Student Account'
                   : 'Sign In as Student'}
-            </button>
-            <button
-              type="button"
-              disabled={signingInPortal !== null}
-              onClick={() => handleGoogleSignIn('student')}
-              className="w-full min-h-[42px] px-4 py-2 rounded-xl glass-input text-xs sm:text-sm font-semibold text-[#0f2422] dark:text-white hover:border-[#0f766e] dark:hover:border-[#2dd4bf] disabled:opacity-60 transition-colors cursor-pointer"
-            >
-              Continue as Student with Google
             </button>
           </form>
         </section>
@@ -601,6 +651,7 @@ export function AuthView({ onNavigate }: AuthViewProps) {
             <input
               type="email"
               required
+              autoComplete="email"
               value={doctorEmail}
               onChange={(e) => setDoctorEmail(e.target.value)}
               placeholder="Practitioner email"
@@ -610,11 +661,23 @@ export function AuthView({ onNavigate }: AuthViewProps) {
               type="password"
               required
               minLength={6}
+              autoComplete={doctorAuthMode === 'signup' ? 'new-password' : 'current-password'}
               value={doctorPassword}
               onChange={(e) => setDoctorPassword(e.target.value)}
               placeholder="Password (min 6 characters)"
               className="w-full min-h-[42px] rounded-xl glass-input px-3 py-2 text-sm focus:outline-2 focus:outline-[#0f766e]"
             />
+            {doctorAuthMode === 'signin' && (
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => void sendPasswordResetEmail(doctorEmail)}
+                  className="text-xs font-medium text-[#0f766e] dark:text-[#2dd4bf] hover:underline cursor-pointer"
+                >
+                  Forgot password?
+                </button>
+              </div>
+            )}
             <button
               type="submit"
               disabled={signingInPortal !== null}
@@ -625,14 +688,6 @@ export function AuthView({ onNavigate }: AuthViewProps) {
                 : doctorAuthMode === 'signup'
                   ? 'Create Doctor Account'
                   : 'Sign In as Doctor'}
-            </button>
-            <button
-              type="button"
-              disabled={signingInPortal !== null}
-              onClick={() => handleGoogleSignIn('doctor')}
-              className="w-full min-h-[42px] px-4 py-2 rounded-xl glass-input text-xs sm:text-sm font-semibold text-[#0f2422] dark:text-white hover:border-[#0f766e] dark:hover:border-[#2dd4bf] disabled:opacity-60 transition-colors cursor-pointer"
-            >
-              Continue as Doctor with Google
             </button>
           </form>
         </section>
