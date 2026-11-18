@@ -19,6 +19,7 @@ import {
 import type { AppView, AppointmentRecord } from '../types/wellness';
 import { HealthRemindersSection } from './HealthRemindersSection';
 import { MoodTrackerCard } from './MoodTrackerCard';
+import { MoodTrendsCard } from './MoodTrendsCard';
 
 interface MyHealthViewProps {
   onNavigate: (view: AppView, arg?: string) => void;
@@ -307,7 +308,7 @@ export function MyHealthView({ onNavigate }: MyHealthViewProps) {
         </section>
 
         {/* Private Mood Tracker Column */}
-        <div className="xl:col-span-5">
+        <div id="mood-tracker-panel" className="xl:col-span-5 scroll-mt-6">
           <MoodTrackerCard
             moods={moods}
             onSaveMood={saveMoodCheckIn}
@@ -315,6 +316,16 @@ export function MyHealthView({ onNavigate }: MyHealthViewProps) {
           />
         </div>
       </div>
+
+      {/* 7-Day Mood Trends (Recharts) */}
+      <MoodTrendsCard
+        moods={moods}
+        onLogToday={() => {
+          document
+            .getElementById('mood-tracker-panel')
+            ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }}
+      />
 
       {/* Local Browser Health Reminders */}
       <HealthRemindersSection />
